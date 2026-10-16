@@ -550,13 +550,19 @@ export function drawProp(ctx, prop) {
     roundRect(ctx, x + w - 52, y + 18, 30, 16, 3);
     ctx.fill();
   } else if (kind === "arcade") {
-    blob(ctx, () => roundRect(ctx, x, y, w, h, 6), "#6a5ac4");
+    blob(ctx, () => roundRect(ctx, x, y, w, h, 6), prop.use === "play" ? "#f08aab" : "#6a5ac4");
     const screen = ctx.createLinearGradient(x, y, x, y + 30);
     screen.addColorStop(0, "#9cf0ff");
     screen.addColorStop(1, "#f7b7cc");
     ctx.fillStyle = screen;
     roundRect(ctx, x + 6, y + 8, w - 12, 28, 3);
     ctx.fill();
+    if (prop.use === "play") {
+      ctx.fillStyle = INK;
+      ctx.font = `700 12px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.fillText("玩", x + w / 2, y + 26);
+    }
     ctx.fillStyle = "#ffe08a";
     ctx.beginPath();
     ctx.arc(x + 14, y + h - 16, 4, 0, Math.PI * 2);
@@ -565,6 +571,15 @@ export function drawProp(ctx, prop) {
     ctx.beginPath();
     ctx.arc(x + w - 14, y + h - 16, 4, 0, Math.PI * 2);
     ctx.fill();
+  } else if (kind === "scoreboard") {
+    blob(ctx, () => roundRect(ctx, x, y, w, h, 4), "#e7c39a");
+    ctx.fillStyle = "#fffaf3";
+    roundRect(ctx, x + 4, y + 4, w - 8, h - 8, 3);
+    ctx.fill();
+    ctx.fillStyle = INK;
+    ctx.font = `700 11px ${FONT}`;
+    ctx.textAlign = "center";
+    ctx.fillText(prop.label || "排行榜", x + w / 2, y + h / 2 + 4);
   } else if (kind === "stall") {
     blob(ctx, () => roundRect(ctx, x, y, w, h, 4), prop.tint || "#e7f3ff");
     ctx.fillStyle = "#fff";

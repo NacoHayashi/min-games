@@ -41,6 +41,10 @@ const state = {
   pan: null,
   hint: "",
   help: false,
+  arcade: false,
+  boardOpen: false,
+  boardGame: "cat2048",
+  leaderboard: null,
   cam: { x: 0, y: 0 },
   anim: 0,
   loop: false,
@@ -112,6 +116,8 @@ function showGate(message) {
   $("dialogue").hidden = true;
   $("editbar").hidden = true;
   $("help").hidden = true;
+  closeArcade();
+  closeBoard();
   $("form-password").hidden = false;
   $("form-register").hidden = true;
   $("gate-msg").textContent = message || "輸入管理員給大家的辦公室密碼。這台裝置會記住你。";
@@ -356,6 +362,8 @@ function onNet(message) {
     if (message.furniture) state.furniture = message.furniture;
     $("avatar-error").textContent = message.message || "";
     setTimeout(() => { if (state.hint === message.message) setHint(""); }, 2400);
+  } else if (message.t === "score") {
+    if (state.boardOpen) void refreshBoard();
   } else if (message.t === "bye") {
     const text = {
       removed: "這個 ID 已被管理員移除。請重新輸入密碼後再登記。",
@@ -602,13 +610,139 @@ function worldToScreen(x, y) {
   return { x: rect.left + (x - state.cam.x), y: rect.top + (y - state.cam.y) };
 }
 
+function usedProps() {
+  return (state.map?.props || []).filter((prop) => prop.use === "play" || prop.use === "scores");
+}
+
+function standPoint(prop) {
+  return { x: prop.x + prop.w / 2, y: prop.y + prop.h + 16 };
+}
+
+function nearestUse() {
+  if (!state.me) return null;
+  let best = null;
+  for (const prop of usedProps()) {
+    const stand = standPoint(prop);
+    const dist = Math.hypot(state.me.x - stand.x, state.me.y - stand.y);
+    if (dist < 78 && (!best || dist < best.dist)) best = { prop, dist };
+  }
+  return best?.prop || null;
+}
+
+function hitUse(x, y) {
+  for (const prop of usedProps()) {
+    if (x >= prop.x - 10 && y >= prop.y - 10 && x <= prop.x + prop.w + 10 && y <= prop.y + prop.h + 36) return prop;
+  }
+  return null;
+}
+
+function openArcade() {
+  state.arcade = true;
+  state.path = [];
+  $("dialogue").hidden = true;
+  $("arcade").hidden = false;
+  $("arcade-frame").src = "/games/?from=office";
+}
+
+function closeArcade() {
+  state.arcade = false;
+  const frame = $("arcade-frame");
+  if (frame) {
+    frame.src = "about:blank";
+    $("arcade").hidden = true;
+  }
+}
+
+function openBoard() {
+  state.boardOpen = true;
+  state.path = [];
+  $("dialogue").hidden = true;
+  $("board").hidden = false;
+  void refreshBoard();
+}
+
+function closeBoard() {
+  state.boardOpen = false;
+  const node = $("board");
+  if (node) node.hidden = true;
+}
+
+async function refreshBoard() {
+  const data = await api("/api/office/leaderboard");
+  if (!data.ok || !state.boardOpen) return;
+  state.leaderboard = data.games || [];
+  renderBoard();
+}
+
+function renderBoard() {
+  const games = state.leaderboard || [];
+  const tabs = $("board-tabs");
+  tabs.replaceChildren();
+  if (!games.some((game) => game.id === state.boardGame) && games[0]) state.boardGame = games[0].id;
+  for (const game of games) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.textContent = game.title;
+    button.setAttribute("aria-pressed", game.id === state.boardGame ? "true" : "false");
+    button.addEventListener("click", () => {
+      state.boardGame = game.id;
+      renderBoard();
+    });
+    tabs.appendChild(button);
+  }
+  const current = games.find((game) => game.id === state.boardGame);
+  const list = $("board-list");
+  list.replaceChildren();
+  const me = $("board-me");
+  if (!current) {
+    me.textContent = "";
+    return;
+  }
+  if (!current.top.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = "還沒有紀錄";
+    list.appendChild(empty);
+  }
+  for (const row of current.top) {
+    const item = document.createElement("li");
+    if (row.id === state.me?.id) item.className = "me";
+    const name = document.createElement("span");
+    name.textContent = `${row.rank}. ${row.displayName}`;
+    const id = document.createElement("small");
+    id.textContent = `@${row.id}`;
+    const score = document.createElement("b");
+    score.textContent = `${row.score} ${current.unit}`;
+    item.append(name, id, score);
+    list.appendChild(item);
+  }
+  if (current.me) me.textContent = `你是第 ${current.me.rank} 名，${current.me.score} ${current.unit}`;
+  else me.textContent = "你還沒有紀錄";
+}
+
+async function submitScore(payload) {
+  if (!payload || state.gate) return;
+  const data = await api("/api/office/score", { method: "POST", body: payload });
+  if (data.ok && state.boardOpen) void refreshBoard();
+}
+
 function interact() {
-  if (!state.me || state.editing || state.help || !$("avatar").hidden) return;
+  if (!state.me || state.editing || state.help || state.arcade || state.boardOpen || !$("avatar").hidden) return;
   sendMove(true);
   if (nearKiki()) {
     $("dialogue-text").textContent = "你好呀，我是櫃檯 Kiki 小姐。想移動螢幕、鍵盤、椅子或其他設備就跟我說。房間的牆不能改喔。";
     $("dialogue").hidden = false;
     state.path = [];
+    return;
+  }
+  const spot = nearestUse();
+  if (spot?.use === "play") {
+    openArcade();
+    return;
+  }
+  if (spot?.use === "scores") {
+    openBoard();
     return;
   }
   if (inRestroom()) showAvatar("mirror");
@@ -653,6 +787,13 @@ function onPointerDown(event) {
     state.selected = null;
     state.pan = { x: event.clientX, y: event.clientY, fx: state.focus.x, fy: state.focus.y };
     canvas.setPointerCapture(event.pointerId);
+    return;
+  }
+  const spot = hitUse(world.x, world.y);
+  if (spot) {
+    const stand = standPoint(spot);
+    if (nearestUse()?.use === spot.use) interact();
+    else state.path = findPath(stand.x, stand.y);
     return;
   }
   const kiki = state.map?.kiki;
@@ -795,6 +936,15 @@ $("btn-edit").addEventListener("click", () => {
 $("edit-done").addEventListener("click", () => send({ t: "edit", on: false }));
 $("help-btn").addEventListener("click", () => { state.help = true; $("help").hidden = false; });
 $("help-close").addEventListener("click", () => { state.help = false; $("help").hidden = true; });
+$("arcade-close").addEventListener("click", () => closeArcade());
+$("board-close").addEventListener("click", () => closeBoard());
+window.addEventListener("message", (event) => {
+  if (event.origin !== location.origin) return;
+  if (event.source !== $("arcade-frame")?.contentWindow) return;
+  const score = event.data && event.data.officeScore;
+  if (!score || typeof score !== "object") return;
+  void submitScore(score);
+});
 $("rename").addEventListener("click", () => {
   $("rename-form").hidden = !$("rename-form").hidden;
   $("rename-input").value = state.me?.displayName || "";
@@ -854,6 +1004,8 @@ function update(dt) {
       state.focus.x += (vx / length) * 520 * dt;
       state.focus.y += (vy / length) * 520 * dt;
     }
+  } else if (state.arcade || state.boardOpen) {
+    state.path = [];
   } else if (vx || vy) {
     state.path = [];
     const length = Math.hypot(vx, vy);
@@ -885,7 +1037,10 @@ function update(dt) {
     $("room-label").textContent = name;
   }
   if (!state.editing && $("dialogue").hidden && $("avatar").hidden) {
+    const spot = nearestUse();
     if (nearKiki()) setHint("按 E 跟 Kiki 小姐說話");
+    else if (spot?.use === "play") setHint("按 E 玩小遊戲");
+    else if (spot?.use === "scores") setHint("按 E 看排行榜");
     else if (inRestroom()) setHint("按 E 更換動物造型");
     else if (state.hint.startsWith("按 E")) setHint("");
   }
@@ -1117,6 +1272,9 @@ window.office = {
   get zone() { return state.zoneName; },
   get editing() { return state.editing; },
   get connected() { return state.connected; },
+  get arcade() { return state.arcade; },
+  get boardOpen() { return state.boardOpen; },
+  walkTo(x, y) { state.path = findPath(x, y); },
   get socket() { return state.socket; },
   worldToScreen,
   screenToWorld,

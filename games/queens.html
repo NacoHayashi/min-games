@@ -82,7 +82,7 @@ function conflicts(){const{N,reg}=pz,q=[],bad=new Set();st.forEach((v,i)=>v===2&
   for(let a=0;a<q.length;a++)for(let b=a+1;b<q.length;b++){const i=q[a],j=q[b],ri=Math.floor(i/N),rj=Math.floor(j/N),ki=i%N,kj=j%N;
     if(ri===rj||ki===kj||reg[i]===reg[j]||(Math.abs(ri-rj)<2&&Math.abs(ki-kj)<2)){bad.add(i);bad.add(j)}}return{q,bad}}
 function render(){const{q,bad}=conflicts();cells.forEach((d,i)=>{d.innerHTML=st[i]===1?'<svg class="x" viewBox="0 0 10 10"><path d="M2 2L8 8M8 2L2 8" stroke="rgba(0,0,0,.45)" stroke-width="1.4" stroke-linecap="round"/></svg>':st[i]===2?PAW:'';d.classList.toggle('bad',bad.has(i))});
-  if(q.length===pz.N&&!bad.size){done=true;setTimeout(()=>$('win').classList.add('show'),300)}}
+  if(q.length===pz.N&&!bad.size){done=true;try{parent.postMessage({officeSolve:'queens'},'*')}catch(e){}setTimeout(()=>$('win').classList.add('show'),300)}}
 function save(){hist.push(st.slice());if(hist.length>300)hist.shift()}
 function idxAt(e){const el=document.elementFromPoint(e.clientX,e.clientY);const c=el&&el.closest&&el.closest('.cell');return c?+c.dataset.i:-1}
 B.addEventListener('pointerdown',e=>{if(done)return;const i=idxAt(e);if(i<0)return;e.preventDefault();down=i;dragged=false;B.setPointerCapture(e.pointerId)});

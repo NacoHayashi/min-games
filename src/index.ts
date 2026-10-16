@@ -26,6 +26,9 @@ function forward(request: Request, trustedAdmin: boolean): Request {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/office" || url.pathname === "/office/") {
+      return Response.redirect(new URL("/", url).href, 302);
+    }
     if (url.pathname.startsWith("/api/office")) {
       try {
         if (url.pathname === "/api/office/admin/health" && request.method === "GET") {

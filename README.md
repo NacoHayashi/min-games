@@ -1,8 +1,8 @@
 # 小遊戲大廳
 
-七款可離線遊玩的瀏覽器小遊戲，集中在同一個大廳頁，另外有一間多人虛擬辦公室。靜態檔在 `public/`。辦公室的登入、在線與擺設走 Worker 裡的一個 SQLite Durable Object。
+七款可離線遊玩的瀏覽器小遊戲，集中在大廳 `/games`。網站首頁 `/` 是多人虛擬辦公室。靜態檔在 `public/`。辦公室的登入、在線、擺設與遊戲分數走 Worker 裡的一個 SQLite Durable Object。
 
-大廳（`public/index.html`）是單一自含檔。每款小遊戲以 `<iframe srcdoc>` 嵌在裡面，網址 hash（例如 `#zip`）決定正在玩哪一款。虛擬辦公室是獨立頁面 `/office`，不嵌進 iframe。
+大廳（`public/games/index.html`）是單一自含檔。每款小遊戲以 `<iframe srcdoc>` 嵌在裡面，網址 hash（例如 `/games#zip`）決定正在玩哪一款。`/office` 會轉到 `/`。管理頁仍在 `/office/admin`。
 
 ## 遊戲
 
@@ -20,16 +20,19 @@
 
 ## 虛擬辦公室
 
-進入 `/office` 要一把**全辦公室共用的密碼**。管理員在 `/office/admin` 設定或更換這把密碼。訪客輸入密碼後，自己取一個還沒人用的 ID 和顯示名稱。畫面上的名字旁邊會有小字 `@id`。
+進入 `/` 要一把**全辦公室共用的密碼**。管理員在 `/office/admin` 設定或更換這把密碼。訪客輸入密碼後，自己取一個還沒人用的 ID 和顯示名稱。畫面上的名字旁邊會有小字 `@id`。
+
+遊戲室裡的街機（按 E）會在辦公室上面打開 `/games?from=office`，連線不會斷。這時破關或最高分會記到這個人的 ID。直接打開 `/games` 不會記分，也不用登入。排行榜在遊戲室另一塊板子上，每款遊戲前 10 名。燒肉屋的 `games/bbq.html` 不修改；大廳只在從辦公室打開時，讀它原本就會寫的最高營收。
 
 同一台瀏覽器會記住登入。管理員更換密碼後，所有人要重輸入新密碼，但這台裝置仍回到原來的 ID、名字與造型。別的裝置不能佔用已經登記的 ID。踢出只清掉這次登入；移除會刪掉這個 ID，之後別人才能再用。
 
 ## 目錄
 
 - `games/`：各遊戲的獨立 HTML。改玩法或畫面時只改這裡，然後執行 `npm run build`。
-- `scripts/build.mjs`：讀取 `games/*.html`，重生 `public/index.html`，並在大廳加上虛擬辦公室入口。有安裝 TypeScript 時會順便做型別檢查。
-- `public/index.html`：實際部署的大廳。不要手動編輯，用建置指令產生。
-- `public/office/`：辦公室與管理頁。
+- `scripts/build.mjs`：讀取 `games/*.html`，重生 `public/games/index.html`，並在大廳加上回到辦公室的入口。有安裝 TypeScript 時會順便做型別檢查。
+- `public/games/index.html`：實際部署的大廳。不要手動編輯，用建置指令產生。
+- `public/index.html`：辦公室入口。
+- `public/office/`：辦公室的程式、樣式與管理頁。`/office` 會轉回 `/`。
 - `src/index.ts`：把 `/api/office` 轉給 Durable Object，其餘交給靜態檔。
 - `src/office-room.ts`：辦公室 Durable Object。
 - `src/content.ts`：地圖、動物、設備。
@@ -82,7 +85,7 @@ cp .dev.vars.example .dev.vars
 npm run dev
 ```
 
-打開 <http://127.0.0.1:8787/office/admin> 輸入 `ADMIN_TOKEN`，設定辦公室密碼，再到 `/office` 用那把密碼登記 ID。大廳在 <http://127.0.0.1:8787/>。
+打開 <http://127.0.0.1:8787/office/admin> 輸入 `ADMIN_TOKEN`，設定辦公室密碼，再到 `/` 用那把密碼登記 ID。大廳在 <http://127.0.0.1:8787/games>。
 
 端對端測試（會自己開 `wrangler dev`）：
 
@@ -97,7 +100,7 @@ npm run test:e2e
 npm run build
 ```
 
-等同 `node scripts/build.mjs`。它會覆寫 `public/index.html`。沒有安裝開發依賴時，仍會產生大廳，並略過型別檢查。
+等同 `node scripts/build.mjs`。它會覆寫 `public/games/index.html`。沒有安裝開發依賴時，仍會產生大廳，並略過型別檢查。
 
 ## 部署
 
@@ -131,7 +134,7 @@ curl https://你的網域/api/office/admin/health
 
 1. 打開 `https://你的網域/office/admin`，輸入 `ADMIN_TOKEN`。
 2. 設定辦公室密碼，把密碼給要進來的人。
-3. 對方打開 `/office`，輸入密碼，再取一個沒人用過的 ID 與顯示名稱。
+3. 對方打開 `/`，輸入密碼，再取一個沒人用過的 ID 與顯示名稱。
 4. 第一次會選小動物。這台瀏覽器會記住登入，下次不用重填。
 5. 更換辦公室密碼會讓所有人重新輸入密碼。同一台裝置仍回到原來的 ID 與造型。
 6. 管理頁可以看誰在線、踢下線，或移除 ID。移除之後，別人才能再用那個 ID。
@@ -144,3 +147,4 @@ curl https://你的網域/api/office/admin/health
 - 走進男廁或女廁，按 E 才能換動物與配件。
 - 視窗下方輸入訊息，Enter 送出，會出現在頭頂幾秒。中文輸入法選字時的 Enter 不會送出。
 - 右上角是在線名單。斷線會自動重連。
+- 遊戲室粉紅色街機按 E 玩小遊戲，旁邊的排行榜按 E 看成績。直接開 `/games` 只在自己的瀏覽器玩，不會上榜。

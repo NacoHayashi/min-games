@@ -76,6 +76,8 @@ export type Prop = {
   solid: boolean;
   label?: string;
   tint?: string;
+  /** "play" opens the game lobby. "scores" opens the leaderboard. */
+  use?: "play" | "scores";
 };
 
 export type Furn = {
@@ -351,8 +353,9 @@ export function buildOffice(): OfficeMap {
     { kind: "counter", solid: true, label: "櫃檯", ...tileBox(3, 4, 8, 1) },
     { kind: "rug", solid: false, ...tileBox(4, 6, 6, 2), tint: "#f8c3d6" },
     { kind: "table", solid: true, ...tileBox(18, 3, 6, 3) },
-    { kind: "arcade", solid: true, x: 29 * TILE + 8, y: 2 * TILE + 4, w: 52, h: 72 },
+    { kind: "arcade", solid: true, use: "play", label: "街機", x: 29 * TILE + 8, y: 2 * TILE + 4, w: 52, h: 72 },
     { kind: "arcade", solid: true, x: 34 * TILE + 4, y: 2 * TILE + 4, w: 52, h: 72 },
+    { kind: "scoreboard", solid: true, use: "scores", label: "排行榜", x: 32 * TILE + 8, y: 6 * TILE + 8, w: 64, h: 24 },
     { kind: "pantry", solid: true, ...tileBox(22, 30, 5, 1) },
     { kind: "stall", solid: true, x: 2 * TILE, y: 29 * TILE, w: 64, h: 56, tint: "#d7ecff" },
     { kind: "stall", solid: true, x: 6 * TILE, y: 29 * TILE, w: 64, h: 56, tint: "#d7ecff" },
@@ -418,6 +421,8 @@ export function buildOffice(): OfficeMap {
     ["接待處", talk.x, talk.y],
     ["會議室", 17 * TILE + 16, 2 * TILE + 16],
     ["遊戲室", 31 * TILE + 16, 7 * TILE + 8],
+    ["街機", 29 * TILE + 34, 2 * TILE + 4 + 72 + 16],
+    ["排行榜", 32 * TILE + 40, 6 * TILE + 48],
     ["辦公區", 8 * TILE + 16, 17 * TILE + 16],
     ["男廁", 5 * TILE + 16, 27 * TILE + 16],
     ["女廁", 15 * TILE + 16, 27 * TILE + 16],

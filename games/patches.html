@@ -93,7 +93,7 @@ function render(extra){let h='';for(const o of placed){const ks=cluesIn(o),col=k
   h+=`<div class="patch${valid(o)?'':' bad'}${o.hint?' hint':''}" style="grid-area:${o.r+1}/${o.c+1}/span ${o.h}/span ${o.w};background:${col}"></div>`;o.hint=false}
   if(cur)h+=`<div class="patch preview" style="grid-area:${cur.r+1}/${cur.c+1}/span ${cur.h}/span ${cur.w};background:transparent"></div>`;$('layer').innerHTML=h;
   const N=pz.N,area=placed.reduce((a,o)=>a+o.w*o.h,0);
-  if(!down&&area===N*N&&placed.length===pz.clues.length&&placed.every(valid)){done=true;setTimeout(()=>$('win').classList.add('show'),300)}}
+  if(!down&&area===N*N&&placed.length===pz.clues.length&&placed.every(valid)){done=true;try{parent.postMessage({officeSolve:'patches'},'*')}catch(e){}setTimeout(()=>$('win').classList.add('show'),300)}}
 function cellAt(e){const b=$('wrap').getBoundingClientRect(),N=pz.N;const c=Math.floor((e.clientX-b.left)/b.width*N),r=Math.floor((e.clientY-b.top)/b.height*N);
   return{r:Math.max(0,Math.min(N-1,r)),c:Math.max(0,Math.min(N-1,c))}}
 function rectOf(a,b){return{r:Math.min(a.r,b.r),c:Math.min(a.c,b.c),h:Math.abs(a.r-b.r)+1,w:Math.abs(a.c-b.c)+1}}

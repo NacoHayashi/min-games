@@ -40,6 +40,14 @@ async function ready(page) {
   await page.waitForFunction(() => window.office && window.office.ready, null, { timeout: 15000 });
 }
 
+async function walkTo(page, x, y) {
+  await page.evaluate(({ x, y }) => window.office.walkTo(x, y), { x, y });
+  await page.waitForFunction(({ x, y }) => {
+    const me = window.office.me;
+    return Math.hypot(me.x - x, me.y - y) < 36;
+  }, { x, y }, { timeout: 20000 });
+}
+
 async function clickWalk(page, x, y) {
   const started = Date.now();
   let last = null;
@@ -69,7 +77,7 @@ async function clickWalk(page, x, y) {
 }
 
 async function register(page, id, name, animal) {
-  await page.goto(`${ORIGIN}/office/`);
+  await page.goto(`${ORIGIN}/`);
   await page.getByLabel("辦公室密碼").fill(PASS);
   await page.getByRole("button", { name: "進入", exact: true }).click();
   await page.getByLabel("你的 ID").waitFor();
@@ -151,15 +159,28 @@ async function main() {
 
     browser = await chromium.launch();
     const lobby = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    const officeRedirect = await fetch(`${ORIGIN}/office/`, { redirect: "manual" });
+    assert(officeRedirect.status === 302, `/office 應轉到首頁，實際 ${officeRedirect.status}`);
+    assert(new URL(officeRedirect.headers.get("location"), ORIGIN).pathname === "/", "轉址目標應為 /");
+
     await lobby.goto(`${ORIGIN}/`);
+    await lobby.getByRole("heading", { name: "迷你辦公室" }).waitFor();
+    await lobby.goto(`${ORIGIN}/games`);
     await lobby.getByRole("heading", { name: "小遊戲大廳" }).waitFor();
     await lobby.getByRole("link", { name: /虛擬辦公室/ }).waitFor();
     await lobby.getByRole("link", { name: /燒肉屋/ }).waitFor();
     await shot(lobby, "lobby");
-    await lobby.getByRole("link", { name: /^Zip/ }).click();
-    await lobby.locator("iframe.on").waitFor();
+    await lobby.goto(`${ORIGIN}/games#zip`);
+    await lobby.locator("#gname", { hasText: "Zip" }).waitFor();
     await lobby.getByRole("button", { name: "← 大廳" }).click();
     await lobby.getByRole("heading", { name: "小遊戲大廳" }).waitFor();
+    const scorePosts = [];
+    lobby.on("request", (request) => {
+      if (request.url().includes("/api/office/score")) scorePosts.push(request.url());
+    });
+    await lobby.evaluate(() => window.postMessage({ officeSolve: "zip" }, location.origin));
+    await lobby.waitForTimeout(200);
+    assert(scorePosts.length === 0, "獨立大廳不該送出分數");
     await lobby.close();
 
     const adminContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -185,7 +206,7 @@ async function main() {
     await admin.getByRole("button", { name: "儲存新密碼" }).click();
     await admin.getByText("已更新密碼").waitFor();
 
-    await naco.goto(`${ORIGIN}/office/`);
+    await naco.goto(`${ORIGIN}/`);
     await naco.getByLabel("辦公室密碼").waitFor();
     await shot(naco, "entry-password");
 
@@ -195,7 +216,7 @@ async function main() {
     await register(naco, "naco", "納可", "貓");
     assert((await naco.evaluate(() => window.office.me.accessories.hat)) === "beanie", "毛帽沒有存下來");
 
-    await momo.goto(`${ORIGIN}/office/`);
+    await momo.goto(`${ORIGIN}/`);
     await momo.getByLabel("辦公室密碼").fill(PASS);
     await momo.getByRole("button", { name: "進入", exact: true }).click();
     await momo.getByLabel("你的 ID").fill("x");
@@ -327,6 +348,61 @@ async function main() {
     const deskCount = await naco.evaluate(() => window.office.furniture.filter((item) => item.kind === "monitor").length);
     assert(deskCount === 10, `螢幕應該有 10 個，實際 ${deskCount}`);
 
+    const anonScore = await fetch(`${ORIGIN}/api/office/score`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ game: "zip", op: "solve" }),
+    });
+    assert(anonScore.status === 401, `未登入記分應為 401，實際 ${anonScore.status}`);
+    const huge = await naco.evaluate(async () => {
+      const response = await fetch("/api/office/score", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${localStorage.getItem("office_session")}`,
+        },
+        body: JSON.stringify({ game: "cat2048", score: 999999999 }),
+      });
+      return response.status;
+    });
+    assert(huge === 400, `過大的分數應為 400，實際 ${huge}`);
+
+    await walkTo(naco, 962, 156);
+    await naco.keyboard.press("e");
+    await naco.locator("#arcade").waitFor({ state: "visible" });
+    await naco.waitForFunction(() => {
+      const frame = document.querySelector("#arcade-frame");
+      return frame && frame.contentDocument && frame.contentDocument.querySelector("h1");
+    });
+    const gamesFrame = naco.frames().find((frame) => frame.url().includes("/games"));
+    assert(gamesFrame, "街機沒有打開大廳");
+    await gamesFrame.getByRole("heading", { name: "小遊戲大廳" }).waitFor();
+    assert((await naco.evaluate(() => window.office.connected)) === true, "玩遊戲時連線不該斷");
+    await gamesFrame.evaluate(() => {
+      const child = document.createElement("iframe");
+      child.srcdoc = "<script>parent.postMessage({officeSolve:'zip'},'*')</script>";
+      document.body.appendChild(child);
+    });
+    await naco.waitForFunction(async () => {
+      const response = await fetch("/api/office/leaderboard", {
+        headers: { authorization: `Bearer ${localStorage.getItem("office_session")}` },
+      });
+      const data = await response.json();
+      const zip = (data.games || []).find((game) => game.id === "zip");
+      return Boolean(zip && zip.me && zip.me.score >= 1);
+    });
+    await naco.locator("#arcade-close").click();
+    await naco.locator("#arcade").waitFor({ state: "hidden" });
+    assert((await naco.evaluate(() => window.office.connected && !window.office.arcade)) === true, "關掉街機後應該還在辦公室");
+
+    await walkTo(naco, 1064, 240);
+    await naco.keyboard.press("e");
+    await naco.getByRole("heading", { name: "排行榜" }).waitFor();
+    await naco.getByRole("button", { name: "Zip", exact: true }).click();
+    await naco.locator("#board-list .me").waitFor();
+    await naco.locator("#board-list").getByText("@naco").waitFor();
+    await naco.locator("#board-close").click();
+
     await admin.locator('tr[data-id="momo"] button', { hasText: "踢出" }).click();
     await momo.getByText("請出辦公室").waitFor();
     await momo.getByLabel("辦公室密碼").fill(PASS);
@@ -350,7 +426,7 @@ async function main() {
 
     const fresh = await browser.newContext({ viewport: { width: 1200, height: 800 } });
     const mika = await fresh.newPage();
-    await mika.goto(`${ORIGIN}/office/`);
+    await mika.goto(`${ORIGIN}/`);
     await mika.getByLabel("辦公室密碼").fill(PASS2);
     await mika.getByRole("button", { name: "進入", exact: true }).click();
     await mika.getByLabel("你的 ID").fill("naco");

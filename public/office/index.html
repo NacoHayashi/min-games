@@ -2,107 +2,11 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="refresh" content="0; url=/" />
   <title>迷你辦公室</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/office/office.css" />
+  <script>location.replace("/");</script>
 </head>
 <body>
-  <canvas id="view" aria-label="辦公室"></canvas>
-  <div id="hud" hidden>
-    <header id="topbar">
-      <div class="brand">迷你辦公室</div>
-      <div id="room-label">走廊</div>
-      <div id="conn">連線中…</div>
-      <button id="help-btn" type="button">操作</button>
-    </header>
-    <aside id="online">
-      <h2>在線夥伴 <span id="online-count">0</span></h2>
-      <ul id="online-list"></ul>
-      <button id="rename" type="button">改名稱</button>
-      <form id="rename-form" hidden>
-        <input id="rename-input" maxlength="16" aria-label="新的顯示名稱" />
-        <button type="submit">儲存</button>
-      </form>
-    </aside>
-    <div id="hint"></div>
-  </div>
-  <div id="dialogue" hidden>
-    <div class="who">櫃檯 Kiki 小姐</div>
-    <p id="dialogue-text"></p>
-    <div class="row">
-      <button type="button" id="btn-edit">調整設備擺設</button>
-      <button type="button" id="btn-later">下次再說</button>
-    </div>
-  </div>
-  <div id="editbar" hidden>
-    <div class="edit-head">
-      <strong>編輯設備</strong>
-      <span>拖曳移動，點一下選取，R 旋轉，Delete 收回。牆壁和房間不能改。</span>
-      <button id="edit-done" type="button">結束編輯</button>
-    </div>
-    <div id="room-chips"></div>
-    <div id="palette"></div>
-  </div>
-  <form id="chatbar" hidden>
-    <label class="sr" for="chat-input">聊天</label>
-    <input id="chat-input" maxlength="80" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="說點什麼…（Enter 送出）" />
-    <button type="submit">送出</button>
-  </form>
-  <section id="help" hidden>
-    <div class="card">
-      <h2>怎麼玩</h2>
-      <ul>
-        <li>WASD 或方向鍵移動，也可以點地板走過去。</li>
-        <li>靠近櫃檯的 Kiki 小姐，按 E 或點她，就能調整螢幕、鍵盤和其他設備。</li>
-        <li>走進男廁或女廁，按 E 可以換動物造型。</li>
-        <li>下方輸入訊息，按 Enter 送出，會出現在頭頂。中文選字確認不會送出。</li>
-      </ul>
-      <button type="button" id="help-close">知道了</button>
-    </div>
-  </section>
-  <section id="avatar" hidden>
-    <div class="card wide">
-      <h2 id="avatar-title">打造你的小動物</h2>
-      <p id="avatar-note" class="muted">大家會在辦公室看到這個造型。名稱下面會標小字 @id。</p>
-      <div class="avatar-layout">
-        <canvas id="preview" width="220" height="180"></canvas>
-        <div>
-          <label>顯示名稱<input id="avatar-name" maxlength="16" autocomplete="nickname" /></label>
-          <p class="slot-label">選擇動物</p>
-          <div id="animal-grid" class="choice-grid"></div>
-          <div id="acc-grid"></div>
-        </div>
-      </div>
-      <p id="avatar-error" class="error"></p>
-      <div class="row">
-        <button type="button" id="avatar-save">進入辦公室</button>
-        <button type="button" id="avatar-cancel" hidden>離開鏡子</button>
-      </div>
-    </div>
-  </section>
-  <section id="gate">
-    <div class="card">
-      <canvas id="gate-art" width="360" height="96" aria-hidden="true"></canvas>
-      <h1>迷你辦公室</h1>
-      <p id="gate-msg" class="muted">正在連上辦公室…</p>
-      <form id="form-password">
-        <label>辦公室密碼<input id="office-password" type="password" autocomplete="current-password" /></label>
-        <button type="submit">進入</button>
-      </form>
-      <form id="form-register" hidden>
-        <label>你的 ID<input id="office-id" maxlength="16" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="例如 naco" /></label>
-        <p class="muted">2–16 個字，以英數開頭，可含底線或減號。會顯示成 @id，不能跟別人重複。</p>
-        <label>顯示名稱<input id="office-name" maxlength="16" autocomplete="nickname" placeholder="大家看到的名字" /></label>
-        <div class="row">
-          <button type="submit">下一步</button>
-          <button type="button" id="back-password">返回</button>
-        </div>
-      </form>
-      <p id="gate-error" class="error"></p>
-      <a class="home" href="/">回到大廳</a>
-    </div>
-  </section>
-  <script type="module" src="/office/game.js"></script>
+  <p><a href="/">回到辦公室</a></p>
 </body>
 </html>
