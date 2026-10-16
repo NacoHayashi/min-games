@@ -14,7 +14,8 @@
  *   {m3save} / {m3load}                      ->  localStorage "lobby_m3"
  *       reply: {m3data}
  */
-import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -94,6 +95,20 @@ function card(game) {
   );
 }
 
+/** Real page, not an embedded game: the office needs its own WebSocket. */
+function officeCard() {
+  return (
+    `<a class="card" href="/office/">` +
+    `<div class="ic" style="background:linear-gradient(135deg,#f7b4d4,#7aa2ff)">` +
+    `<svg viewBox="0 0 100 100" fill="#fff"><rect x="18" y="28" width="64" height="52" rx="8"/>` +
+    `<rect x="30" y="40" width="16" height="12" rx="2" fill="#7aa2ff"/>` +
+    `<rect x="54" y="40" width="16" height="12" rx="2" fill="#7aa2ff"/>` +
+    `<rect x="42" y="60" width="16" height="20" rx="2" fill="#f7b4d4"/></svg></div>` +
+    `<div class="tx"><b>虛擬辦公室</b><span>輸入共用密碼，和同事一起走動、聊天、擺設備</span></div>` +
+    `<span class="go">進入</span></a>`
+  );
+}
+
 const known = new Set(GAMES.map((g) => `${g.id}.html`));
 const present = readdirSync(gamesDir).filter((name) => name.endsWith(".html"));
 const missing = [...known].filter((name) => !present.includes(name));
@@ -127,7 +142,7 @@ const html = `<!DOCTYPE html><html lang="zh-Hant-TW"><head><meta charset="UTF-8"
 .top button{font:inherit;font-size:15px;padding:6px 14px;border-radius:999px;border:1.5px solid #0a66c2;background:#fff;color:#0a66c2;cursor:pointer}
 .top b{font-size:16px}#frames{flex:1;position:relative}iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none}iframe.on{display:block}
 </style></head><body>
-<div id="lobby"><h1>🎮 小遊戲大廳</h1><p class="sub">今天想玩哪一款？</p>${GAMES.map(card).join("")}</div>
+<div id="lobby"><h1>🎮 小遊戲大廳</h1><p class="sub">今天想玩哪一款？</p>${GAMES.map(card).join("")}${officeCard()}</div>
 <div id="game"><div class="top"><button id="back">← 大廳</button><b id="gname"></b></div><div id="frames"></div></div>
 <script>
 const GAMES={${embedded}};const NAMES={${names}};const frames={};
@@ -146,3 +161,11 @@ addEventListener('hashchange',()=>{if(GAMES[location.hash.slice(1)])nav++;else n
 mkdirSync(dirname(outFile), { recursive: true });
 writeFileSync(outFile, html);
 console.log(`wrote ${outFile} (${Buffer.byteLength(html)} bytes)`);
+
+const tsc = join(root, "node_modules/typescript/bin/tsc");
+if (!existsSync(tsc)) {
+  console.log("typescript not installed; skip typecheck");
+} else {
+  const result = spawnSync(process.execPath, [tsc, "--noEmit"], { stdio: "inherit" });
+  if (result.status) process.exit(result.status);
+}

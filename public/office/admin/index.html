@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>辦公室管理</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/office/admin.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">迷你遊戲</p>
+        <h1>辦公室管理</h1>
+      </div>
+      <a href="/office/">回到辦公室</a>
+    </header>
+    <section id="login" class="card">
+      <h2>管理員權杖</h2>
+      <p class="muted">這是 Cloudflare 的 <code>ADMIN_TOKEN</code>，不是辦公室密碼。</p>
+      <form id="form-token">
+        <label>管理員權杖<input id="admin-token" type="password" autocomplete="current-password" /></label>
+        <button type="submit">進入</button>
+      </form>
+      <p id="login-error" class="error"></p>
+    </section>
+    <section id="panel" class="card" hidden>
+      <h2>辦公室密碼</h2>
+      <p id="pw-state" class="muted">讀取中…</p>
+      <p class="muted">更換密碼後，所有人的登入會失效，需要重輸新密碼。同一台裝置仍會回到原來的 ID。</p>
+      <form id="form-password">
+        <label>新的辦公室密碼<input id="new-password" type="password" autocomplete="new-password" /></label>
+        <label>再輸入一次<input id="new-password2" type="password" autocomplete="new-password" /></label>
+        <button type="submit">儲存新密碼</button>
+      </form>
+      <p id="pw-error" class="error"></p>
+      <h2>在線與成員</h2>
+      <p class="muted">可以踢下線（對方要重輸密碼）或移除 ID（之後別人才能用這個 ID）。</p>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>顯示名稱</th><th>狀態</th><th></th></tr>
+        </thead>
+        <tbody id="members"></tbody>
+      </table>
+      <p id="empty" class="muted" hidden>還沒有人登記。</p>
+      <button id="refresh" type="button" class="ghost">重新整理</button>
+    </section>
+  </main>
+  <script src="/office/admin.js"></script>
+</body>
+</html>
