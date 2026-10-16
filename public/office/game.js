@@ -941,7 +941,9 @@ $("board-close").addEventListener("click", () => closeBoard());
 window.addEventListener("message", (event) => {
   if (event.origin !== location.origin) return;
   if (event.source !== $("arcade-frame")?.contentWindow) return;
-  const score = event.data && event.data.officeScore;
+  const data = event.data || {};
+  if (data.officeClose) { closeArcade(); return; }
+  const score = data.officeScore;
   if (!score || typeof score !== "object") return;
   void submitScore(score);
 });
