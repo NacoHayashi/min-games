@@ -1,5 +1,20 @@
 name = "min-games"
-compatibility_date = "2026-10-01"
+main = "src/index.ts"
+compatibility_date = "2026-10-12"
 
+# The lobby and the office client are static files in ./public.
+# Only /api/* is handled by the Worker (Durable Object + WebSocket).
 [assets]
 directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[durable_objects.bindings]]
+name = "OFFICE"
+class_name = "OfficeRoom"
+
+# Applied on the first `wrangler deploy`. Free plan only allows SQLite-backed
+# Durable Objects (not the legacy key-value backend).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["OfficeRoom"]

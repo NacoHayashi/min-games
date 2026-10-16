@@ -2,6 +2,16 @@
   "name": "min-games",
   "private": true,
   "scripts": {
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "node tests/office.e2e.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261016.1",
+    "playwright": "^1.56.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.151.0"
   }
 }
