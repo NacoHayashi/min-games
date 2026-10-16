@@ -167,8 +167,10 @@ async function main() {
     await lobby.getByRole("heading", { name: "迷你辦公室" }).waitFor();
     await lobby.goto(`${ORIGIN}/games`);
     await lobby.getByRole("heading", { name: "小遊戲大廳" }).waitFor();
-    await lobby.getByRole("link", { name: /虛擬辦公室/ }).waitFor();
     await lobby.getByRole("link", { name: /燒肉屋/ }).waitFor();
+    assert(await lobby.getByRole("link", { name: /辦公室/ }).count() === 0, "獨立大廳不該有辦公室連結");
+    assert(await lobby.getByRole("button", { name: /辦公室/ }).count() === 0, "獨立大廳不該有辦公室按鈕");
+    assert(!(await lobby.locator("#lobby").innerText()).includes("辦公室"), "獨立大廳不該提到辦公室");
     await shot(lobby, "lobby");
     await lobby.goto(`${ORIGIN}/games#zip`);
     await lobby.locator("#gname", { hasText: "Zip" }).waitFor();
@@ -253,7 +255,11 @@ async function main() {
     await shot(lobby, "cat2048-dex");
 
     const arcadeLobby = await browser.newPage({ viewport: { width: 900, height: 700 } });
+    await arcadeLobby.goto(`${ORIGIN}/games/?from=office`);
+    await arcadeLobby.getByRole("button", { name: "回到辦公室" }).click();
+    await arcadeLobby.waitForURL((url) => url.pathname === "/");
     await arcadeLobby.goto(`${ORIGIN}/games/?from=office#cat2048`);
+    await arcadeLobby.getByRole("button", { name: "回到辦公室" }).waitFor();
     const arcadeTile = await readCatTile(arcadeLobby);
     assert(arcadeTile.src.startsWith("/games/cat2048/") && arcadeTile.naturalWidth === 256, `街機覆蓋層也應載入同一批圖，實際 ${JSON.stringify(arcadeTile)}`);
     await arcadeLobby.close();
@@ -453,6 +459,7 @@ async function main() {
     const gamesFrame = naco.frames().find((frame) => frame.url().includes("/games"));
     assert(gamesFrame, "街機沒有打開大廳");
     await gamesFrame.getByRole("heading", { name: "小遊戲大廳" }).waitFor();
+    await gamesFrame.getByRole("button", { name: "回到辦公室" }).waitFor();
     assert((await naco.evaluate(() => window.office.connected)) === true, "玩遊戲時連線不該斷");
     await gamesFrame.evaluate(() => {
       const child = document.createElement("iframe");
@@ -470,9 +477,25 @@ async function main() {
     await naco.locator("#arcade-close").click();
     await naco.locator("#arcade").waitFor({ state: "hidden" });
     assert((await naco.evaluate(() => window.office.connected && !window.office.arcade)) === true, "關掉街機後應該還在辦公室");
+    await naco.evaluate(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "e" }));
+    });
+    await naco.locator("#arcade").waitFor({ state: "visible" });
+    await naco.waitForFunction(() => {
+      const frame = document.querySelector("#arcade-frame");
+      return frame && frame.contentDocument && frame.contentDocument.querySelector(".office-close");
+    });
+    const reopened = naco.frames().find((frame) => frame.url().includes("/games"));
+    await reopened.getByRole("button", { name: "回到辦公室" }).click();
+    await naco.locator("#arcade").waitFor({ state: "hidden" });
+    assert((await naco.evaluate(() => window.office.connected && !window.office.arcade)) === true, "從大廳回到辦公室後應該還在線");
 
     await walkTo(naco, 1064, 240);
-    await naco.keyboard.press("e");
+    await naco.evaluate(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "e" }));
+    });
     await naco.getByRole("heading", { name: "排行榜" }).waitFor();
     await naco.getByRole("button", { name: "Zip", exact: true }).click();
     await naco.locator("#board-list .me").waitFor();

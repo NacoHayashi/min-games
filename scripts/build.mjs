@@ -95,20 +95,6 @@ function card(game) {
   );
 }
 
-/** Real page, not an embedded game: the office needs its own WebSocket. */
-function officeCard() {
-  return (
-    `<a class="card" href="/" id="office-card">` +
-    `<div class="ic" style="background:linear-gradient(135deg,#f7b4d4,#7aa2ff)">` +
-    `<svg viewBox="0 0 100 100" fill="#fff"><rect x="18" y="28" width="64" height="52" rx="8"/>` +
-    `<rect x="30" y="40" width="16" height="12" rx="2" fill="#7aa2ff"/>` +
-    `<rect x="54" y="40" width="16" height="12" rx="2" fill="#7aa2ff"/>` +
-    `<rect x="42" y="60" width="16" height="20" rx="2" fill="#f7b4d4"/></svg></div>` +
-    `<div class="tx"><b>虛擬辦公室</b><span>輸入共用密碼，和同事一起走動、聊天、擺設備</span></div>` +
-    `<span class="go">進入</span></a>`
-  );
-}
-
 const known = new Set(GAMES.map((g) => `${g.id}.html`));
 const present = readdirSync(gamesDir).filter((name) => name.endsWith(".html"));
 const missing = [...known].filter((name) => !present.includes(name));
@@ -139,15 +125,18 @@ const html = `<!DOCTYPE html><html lang="zh-Hant-TW"><head><meta charset="UTF-8"
 .go{flex:none;background:#0a66c2;color:#fff;border-radius:999px;padding:8px 18px;font-weight:600;font-size:15px}
 #game{display:none;position:fixed;inset:0;flex-direction:column;background:#f4f2ee}#game.show{display:flex}
 .top{flex:none;height:48px;display:flex;align-items:center;gap:10px;padding:0 10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-.top button{font:inherit;font-size:15px;padding:6px 14px;border-radius:999px;border:1.5px solid #0a66c2;background:#fff;color:#0a66c2;cursor:pointer}
+.top button,.office-close{font:inherit;font-size:15px;padding:6px 14px;border-radius:999px;border:1.5px solid #0a66c2;background:#fff;color:#0a66c2;cursor:pointer}
+#lobby .office-close{margin:0 0 16px}.top .office-close{margin-left:auto}
 .top b{font-size:16px}#frames{flex:1;position:relative}iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none}iframe.on{display:block}
 </style></head><body>
-<div id="lobby"><h1>🎮 小遊戲大廳</h1><p class="sub">今天想玩哪一款？</p>${GAMES.map(card).join("")}${officeCard()}</div>
+<div id="lobby"><h1>🎮 小遊戲大廳</h1><p class="sub">今天想玩哪一款？</p>${GAMES.map(card).join("")}</div>
 <div id="game"><div class="top"><button id="back">← 大廳</button><b id="gname"></b></div><div id="frames"></div></div>
 <script>
 const GAMES={${embedded}};const NAMES={${names}};const frames={};
 const FROM_OFFICE=new URLSearchParams(location.search).get('from')==='office';
-if(FROM_OFFICE){const card=document.getElementById('office-card');if(card)card.remove()}
+function leaveOffice(){if(parent!==window){try{parent.postMessage({officeClose:1},location.origin)}catch(e){}return}location.href='/'}
+if(FROM_OFFICE){const mk=()=>{const b=document.createElement('button');b.type='button';b.className='office-close';b.textContent='回到辦公室';b.onclick=leaveOffice;return b};
+  document.querySelector('#lobby .sub').insertAdjacentElement('afterend',mk());document.querySelector('#game .top').appendChild(mk())}
 function relayScore(payload){if(!FROM_OFFICE||parent===window||!payload)return;try{parent.postMessage({officeScore:payload},location.origin)}catch(e){}}
 function matchCleared(mem){const stars=mem&&Array.isArray(mem.stars)?mem.stars:[];let n=0;stars.forEach((s,i)=>{if(s>0)n=Math.max(n,i+1)});return n}
 function reportBbq(){if(!FROM_OFFICE)return;let n=0;try{n=+localStorage.getItem('yakiniku_best_v1')||0}catch(e){}if(n>0)relayScore({game:'bbq',score:Math.round(n)})}
