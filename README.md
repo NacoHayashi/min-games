@@ -23,7 +23,7 @@
 - `games/`：各遊戲的獨立 HTML。改玩法或畫面時只改這裡，然後執行 `npm run build`。
 - `scripts/build.mjs`：無相依套件。讀取 `games/*.html`，重生 `public/index.html`。
 - `public/index.html`：實際部署的大廳。不要手動編輯，用建置指令產生。
-- `wrangler.toml`：Worker 名稱 `mini-games`，靜態資源目錄 `./public`。
+- `wrangler.toml`：Worker 名稱 `min-games`，靜態資源目錄 `./public`。
 
 ## 新增一款遊戲
 
@@ -80,7 +80,7 @@ npx wrangler deploy
 2. 授權 GitHub，選取 `NacoHayashi/min-games`，生產分支設為 `main`。
 3. 建置指令留空即可，因為 `public/index.html` 已經在儲存庫裡。若希望每次部署都從 `games/` 重生大廳，把建置指令設成 `npm run build`。
 4. 部署指令設成 `npx wrangler deploy`（這也是 Cloudflare Git 建置的預設部署指令）。
-5. 確認根目錄的 `wrangler.toml` 被採用：Worker 名稱是 `mini-games`，`[assets] directory = "./public"`。帳號與 API token 由 Git 連線自動提供，不必寫進設定檔。
+5. 確認根目錄的 `wrangler.toml` 被採用：Worker 名稱是 `min-games`，`[assets] directory = "./public"`。帳號與 API token 由 Git 連線自動提供，不必寫進設定檔。
 6. 儲存並部署。之後推上 `main` 就會自動再部署。
 
 非生產分支若也要預覽，在同一組設定裡為其他分支加上部署指令 `npx wrangler deploy`，或依控制台的預覽分支選項處理。
