@@ -15,20 +15,23 @@ button.primary{background:#e8935a;color:#fff;box-shadow:0 2px 0 #b8683a}button:d
 .slot,.tile{position:absolute;left:2%;top:2%;width:22.5%;height:22.5%;border-radius:12px}
 .slot{background:rgba(255,255,255,.35)}
 .tile{transition:transform .11s ease-in-out;will-change:transform;z-index:1}
-.tile .in{position:absolute;inset:0;border-radius:12px;overflow:hidden;box-shadow:0 2px 0 rgba(0,0,0,.08)}
-.tile svg{position:absolute;inset:4%;width:92%;height:92%}
-.tile .num{position:absolute;right:6%;bottom:5%;font-size:min(3.2vw,14px);font-weight:800;line-height:1;padding:2px 5px;border-radius:8px;background:rgba(255,255,255,.8);color:#7a5236}
+.tile .in{position:absolute;inset:0;border-radius:12px;overflow:hidden;box-shadow:0 2px 0 rgba(0,0,0,.08);background:#fff7ea}
+.tile .in img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:12px;pointer-events:none}
+.tile.glow .in{box-shadow:0 0 0 3px #e8b423,0 0 14px 3px rgba(255,196,60,.95)}
+.tile .num{position:absolute;right:6%;bottom:5%;z-index:2;font-size:min(3.2vw,14px);font-weight:800;line-height:1;padding:2px 5px;border-radius:8px;background:rgba(255,255,255,.88);color:#7a5236}
 .tile.new .in{animation:appear .18s ease-out}.tile.merged{z-index:2}.tile.merged .in{animation:pop .2s ease-out}
 @keyframes appear{from{transform:scale(0)}}@keyframes pop{50%{transform:scale(1.14)}}
 .ov{position:fixed;inset:0;background:rgba(80,50,30,.45);display:none;align-items:center;justify-content:center;z-index:9;padding:16px}.ov.show{display:flex}
 .card{background:#fff;border-radius:20px;padding:20px;text-align:center;max-width:460px;width:100%;max-height:90vh;overflow:auto}
 .card h2{margin:0 0 10px;font-size:28px;color:#c0703a}.card p{margin:0 0 14px}
 .dex{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0 16px}
-.dex div{border-radius:12px;padding:6px;font-size:13px;display:flex;flex-direction:column;align-items:center;gap:2px}.dex svg{width:100%;aspect-ratio:1;height:auto}
-.dex .lock{background:#eee!important;color:#aaa}.dex .lock svg{filter:brightness(0) opacity(.15)}
+.dex div{border-radius:12px;padding:6px;font-size:13px;display:flex;flex-direction:column;align-items:center;gap:2px;background:#fff7ea}
+.dex img{width:100%;aspect-ratio:1;height:auto;object-fit:cover;border-radius:10px}
+.dex .lock{background:#eee!important;color:#aaa}.dex .lock img{filter:grayscale(1) brightness(.4)}
+.dex .glow{box-shadow:0 0 0 3px #e8b423,0 0 10px rgba(255,196,60,.85)}
 .hint{text-align:center;font-size:13px;color:#a08672;margin:0}
 </style></head><body><div class="app">
-<div class="head"><h1>2048 貓咪進化<small id="stageName">合併相同的貓咪，養出貓王！</small></h1>
+<div class="head"><h1>2048 貓咪進化<small id="stageName">合併相同的貓咪，養出黃金星貓！</small></h1>
 <div class="sc"><div class="k">分數</div><div class="v" id="score">0</div></div><div class="sc"><div class="k">最高</div><div class="v" id="best">0</div></div></div>
 <div class="bar"><button class="primary" id="new">新遊戲</button><button id="undo" disabled>↶ 復原</button><button id="dexBtn">📖 貓咪圖鑑</button></div>
 <div class="board" id="board"></div>
@@ -56,41 +59,22 @@ function spawn(tiles){const used=new Set(tiles.map(t=>t.r*4+t.c)),free=[];for(le
   const p=free[Math.floor(Math.random()*free.length)];const t={id:nextId++,v:Math.random()<.9?2:4,r:Math.floor(p/4),c:p%4};tiles.push(t);return t}
 if(typeof module!=='undefined')module.exports={operate,canMove,spawn};
 // ===== cats =====
+// Absolute paths: this game runs inside a srcdoc iframe on /games and in the arcade overlay.
+const CAT='/games/cat2048/';
 const STAGES=[
-{v:2,n:'小奶貓',bg:'#fdeff4',fur:'#fff7ea',line:'#e8cfae',eye:'#6a4a3a',kit:1},
-{v:4,n:'橘貓',bg:'#fff1d6',fur:'#ffb25c',line:'#d9822e',eye:'#5a8a2a',p:'stripe'},
-{v:8,n:'黑貓',bg:'#e7e2f7',fur:'#3b3445',line:'#221d29',eye:'#f5c518'},
-{v:16,n:'三花貓',bg:'#e6f6ea',fur:'#fffaf2',line:'#d8c8b0',eye:'#c08a2a',p:'calico'},
-{v:32,n:'暹羅貓',bg:'#e3f1fb',fur:'#f6e7cf',line:'#cdb08a',eye:'#3c8ee0',p:'mask',mask:'#6b4a35'},
-{v:64,n:'虎斑貓',bg:'#f6ecdc',fur:'#b8a28a',line:'#7e6650',eye:'#9ab83a',p:'tabby'},
-{v:128,n:'俄羅斯藍貓',bg:'#e4ecf5',fur:'#8ea3bd',line:'#64788f',eye:'#3fbf6a'},
-{v:256,n:'布偶貓',bg:'#f3e6f7',fur:'#fffdf8',line:'#d8ccc0',eye:'#4a9ae8',p:'mask',mask:'#b89a84'},
-{v:512,n:'波斯貓',bg:'#fde4e4',fur:'#fbeedd',line:'#e0c6a6',eye:'#d9822e',p:'fluff'},
-{v:1024,n:'緬因貓',bg:'#e8f3d9',fur:'#a8794e',line:'#6e4a2a',eye:'#d9b82a',p:'coon'},
-{v:2048,n:'貓王',bg:'#fff3b0',fur:'#ffd36b',line:'#d9a02e',eye:'#3a7ad9',acc:'crown'},
-{v:4096,n:'貓神',bg:'#e8f0ff',fur:'#ffffff',line:'#c8d0e8',eye:'#a066e8',acc:'halo'},
-{v:8192,n:'宇宙貓',bg:'#d9d2ff',fur:'#7a62d8',line:'#4e3aa8',eye:'#ffe066',acc:'cosmic'}];
+{v:2,n:'橘貓',file:'01_orange_cat.webp'},
+{v:4,n:'白貓',file:'02_white_cat.webp'},
+{v:8,n:'灰虎斑',file:'03_gray_tabby.webp'},
+{v:16,n:'三花貓',file:'04_calico_cat.webp'},
+{v:32,n:'黑貓',file:'05_black_cat.webp'},
+{v:64,n:'蝴蝶結貓',file:'06_bow_cat.webp'},
+{v:128,n:'微笑貓',file:'07_smile_cat.webp'},
+{v:256,n:'皇冠貓',file:'08_crown_cat.webp'},
+{v:512,n:'月亮貓',file:'09_moon_cat.webp'},
+{v:1024,n:'星星貓',file:'10_star_cat.webp'},
+{v:2048,n:'黃金星貓',file:'10_star_cat.webp',glow:1}];
 function stageOf(v){let s=STAGES[0];for(const x of STAGES)if(v>=x.v)s=x;return s}
-function catSVG(s){const id='k'+s.v,F=s.fur,Ln=s.line,ex=s.kit?7:5.5,ey=s.kit?8:6.5;let back='',over='',top='';
-  if(s.p==='fluff'){for(let a=0;a<360;a+=30){const x=50+36*Math.cos(a*Math.PI/180),y=58+31*Math.sin(a*Math.PI/180);back+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="10" fill="${F}" stroke="${Ln}" stroke-width="2"/>`}}
-  if(s.p==='coon')back+=`<path d="M18 66Q8 80 24 86Q34 92 50 90Q66 92 76 86Q92 80 82 66Z" fill="#e8d2b4" stroke="${Ln}" stroke-width="2"/>`;
-  if(s.acc==='halo')back+='<ellipse cx="50" cy="12" rx="22" ry="6" fill="none" stroke="#ffd84a" stroke-width="4"/>';
-  if(s.acc==='cosmic')back+='<g fill="#fff"><path d="M12 20l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/><path d="M86 30l1.5 4 4 1.5-4 1.5-1.5 4-1.5-4-4-1.5 4-1.5z"/><circle cx="20" cy="88" r="2"/><circle cx="84" cy="84" r="2.5"/></g>';
-  const earC=s.p==='mask'?s.mask:F;
-  const ears=`<path d="M19 46L24 12L46 32Z" fill="${earC}" stroke="${Ln}" stroke-width="2.5" stroke-linejoin="round"/><path d="M81 46L76 12L54 32Z" fill="${earC}" stroke="${Ln}" stroke-width="2.5" stroke-linejoin="round"/>
-   <path d="M25 38L27 21L38 32Z" fill="#ffb6c1"/><path d="M75 38L73 21L62 32Z" fill="#ffb6c1"/>`+(s.p==='coon'?`<path d="M24 12L22 2M24 12L28 3M76 12L78 2M76 12L72 3" stroke="${Ln}" stroke-width="2.5" stroke-linecap="round"/>`:'');
-  const head=s.kit?'<ellipse cx="50" cy="58" rx="31" ry="27"':'<ellipse cx="50" cy="57" rx="35" ry="30"';
-  if(s.p==='calico')over+=`<g clip-path="url(#c${id})"><ellipse cx="30" cy="40" rx="18" ry="14" fill="#f39a4a"/><ellipse cx="72" cy="36" rx="16" ry="13" fill="#3b3445"/><ellipse cx="74" cy="80" rx="10" ry="7" fill="#f39a4a"/></g>`;
-  if(s.p==='mask')over+=`<g clip-path="url(#c${id})"><ellipse cx="50" cy="64" rx="19" ry="16" fill="${s.mask}" opacity=".85"/></g>`;
-  if(s.p==='stripe'||s.p==='tabby')over+=`<g stroke="${Ln}" stroke-width="3.2" stroke-linecap="round" fill="none"><path d="M50 29V39M41 31L43 40M59 31L57 40"/>${s.p==='tabby'?'<path d="M17 56H27M16 63L26 61M83 56H73M84 63L74 61"/>':''}</g>`;
-  if(s.acc==='crown'||s.acc==='halo')top+='<path d="M32 30L30 12L40 20L50 8L60 20L70 12L68 30Z" fill="#ffd84a" stroke="#c99a12" stroke-width="2.5" stroke-linejoin="round"/><circle cx="50" cy="20" r="3" fill="#e8466a"/><circle cx="39" cy="24" r="2" fill="#3a8de0"/><circle cx="61" cy="24" r="2" fill="#3a8de0"/>';
-  const dark=s.fur==='#3b3445'||s.p==='mask'&&s.mask==='#6b4a35';
-  const eyes=[38,62].map(x=>`<ellipse cx="${x}" cy="55" rx="${ex}" ry="${ey}" fill="${s.eye}"/><ellipse cx="${x}" cy="55.5" rx="${ex*.42}" ry="${ey*.8}" fill="#1a1a1a"/><circle cx="${x+ex*.35}" cy="${55-ey*.4}" r="${ex*.32}" fill="#fff"/>`).join('');
-  const wc=dark?'#e8e0d8':'#8a6c55';
-  return `<svg viewBox="0 0 100 100"><defs><clipPath id="c${id}">${head}/></clipPath></defs>${back}${ears}${head} fill="${F}" stroke="${Ln}" stroke-width="2.5"/>${over}${top}
-  <ellipse cx="29" cy="66" rx="6" ry="3.5" fill="#ff9fb3" opacity=".55"/><ellipse cx="71" cy="66" rx="6" ry="3.5" fill="#ff9fb3" opacity=".55"/>${eyes}
-  <path d="M46.5 63H53.5L50 67Z" fill="#ff8fa3"/><path d="M43 69Q46.5 73 50 69Q53.5 73 57 69" fill="none" stroke="${wc}" stroke-width="2" stroke-linecap="round"/>
-  <g stroke="${wc}" stroke-width="1.4" stroke-linecap="round" opacity=".8"><path d="M30 64L12 61M30 68L13 70M70 64L88 61M70 68L87 70"/></g></svg>`}
+function catImg(s){return `<img alt="" draggable="false" src="${CAT}${s.file}">`}
 if(typeof document!=='undefined'){
 // ===== storage =====
 const KEY='cat2048';let save={best:0,max:2};
@@ -102,8 +86,8 @@ try{if(parent!==window)parent.postMessage({lobbyLoad:KEY},'*')}catch(e){}
 const $=id=>document.getElementById(id),B=$('board');let tiles=[],score=0,prev=null,anim=false,won=false,keepGoing=false;const els=new Map();
 for(let i=0;i<16;i++){const s=document.createElement('div');s.className='slot';s.style.transform=pos(Math.floor(i/4),i%4);B.appendChild(s)}
 function pos(r,c){return`translate(${c*108.889}%,${r*108.889}%)`}
-function mk(t,cls){const s=stageOf(t.v),el=document.createElement('div');el.className='tile '+(cls||'');
-  el.innerHTML=`<div class="in" style="background:${s.bg}">${catSVG(s)}<span class="num">${t.v}</span></div>`;el.title=s.n;el.style.transform=pos(t.r,t.c);B.appendChild(el);els.set(t.id,el)}
+function mk(t,cls){const s=stageOf(t.v),el=document.createElement('div');el.className='tile '+(cls||'')+(s.glow?' glow':'');
+  el.innerHTML=`<div class="in">${catImg(s)}<span class="num">${t.v}</span></div>`;el.title=s.n;el.style.transform=pos(t.r,t.c);B.appendChild(el);els.set(t.id,el)}
 function hud(){$('score').textContent=score;save.best=Math.max(save.best,score);$('best').textContent=save.best;$('undo').disabled=!prev||anim;
   const mx=Math.max(2,...tiles.map(t=>t.v));if(mx>save.max){save.max=mx}$('stageName').textContent='目前最高：'+stageOf(mx).n+'（'+mx+'）'}
 function newGame(){for(const el of els.values())el.remove();els.clear();tiles=[];score=0;prev=null;won=false;keepGoing=false;
@@ -116,9 +100,9 @@ function move(dir){if(anim||$('ov').classList.contains('show'))return;const res=
     for(const id of res.born)mk(tiles.find(t=>t.id===id),'merged');if(nt)mk(nt,'new');anim=false;hud();persist();check()},115);hud()}
 function undo(){if(!prev||anim)return;for(const el of els.values())el.remove();els.clear();tiles=prev.tiles;score=prev.score;prev=null;tiles.forEach(t=>mk(t));$('ov').classList.remove('show');hud()}
 function overlay(t,p,btns){$('ovT').textContent=t;$('ovP').textContent=p;$('ovB').innerHTML='';btns.forEach(([txt,fn,pri])=>{const b=document.createElement('button');b.textContent=txt;if(pri)b.className='primary';b.onclick=fn;$('ovB').appendChild(b)});$('ov').classList.add('show')}
-function check(){if(!won&&!keepGoing&&tiles.some(t=>t.v>=2048)){won=true;overlay('🎉 完成！','你養出了貓王！要繼續挑戰更高的貓咪嗎？',[['繼續玩',()=>{keepGoing=true;$('ov').classList.remove('show')},true],['新遊戲',newGame]]);return}
+function check(){if(!won&&!keepGoing&&tiles.some(t=>t.v>=2048)){won=true;overlay('🎉 完成！','你養出了黃金星貓！要繼續挑戰更高的貓咪嗎？',[['繼續玩',()=>{keepGoing=true;$('ov').classList.remove('show')},true],['新遊戲',newGame]]);return}
   if(!canMove(tiles))overlay('😿 遊戲結束','分數 '+score+'，再接再厲！',[['↶ 復原',undo],['新遊戲',newGame,true]])}
-function showDex(){$('dex').innerHTML=STAGES.map(s=>{const ok=save.max>=s.v;return`<div class="${ok?'':'lock'}" style="background:${s.bg}">${catSVG(s)}<b>${ok?s.n:'？？？'}</b><span>${s.v}</span></div>`}).join('');$('dexOv').classList.add('show')}
+function showDex(){$('dex').innerHTML=STAGES.map(s=>{const ok=save.max>=s.v;return`<div class="${ok?'':'lock'}${s.glow?' glow':''}">${catImg(s)}<b>${ok?s.n:'？？？'}</b><span>${s.v}</span></div>`}).join('');$('dexOv').classList.add('show')}
 const KEYS={ArrowLeft:'left',ArrowRight:'right',ArrowUp:'up',ArrowDown:'down',a:'left',d:'right',w:'up',s:'down',A:'left',D:'right',W:'up',S:'down'};
 document.addEventListener('keydown',e=>{const d=KEYS[e.key];if(d){e.preventDefault();move(d)}});
 let sx=null,sy=null;

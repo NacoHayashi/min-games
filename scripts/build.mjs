@@ -71,7 +71,7 @@ const GAMES = [
   {
     id: "cat2048",
     title: "2048 貓咪進化",
-    desc: "合併相同貓咪，從小奶貓一路養到貓王",
+    desc: "合併相同貓咪，養出黃金星貓",
     iconStyle: "background:linear-gradient(135deg,#ffc58a,#e8935a)",
     icon: '<svg viewBox="0 0 100 100"><path d="M16 48L22 12L44 32Z M84 48L78 12L56 32Z" fill="#fff"/><ellipse cx="50" cy="58" rx="36" ry="30" fill="#fff"/><circle cx="38" cy="56" r="5" fill="#e8935a"/><circle cx="62" cy="56" r="5" fill="#e8935a"/><path d="M46 65H54L50 69Z" fill="#ff8fa3"/></svg>',
   },
