@@ -181,6 +181,82 @@ async function main() {
     await lobby.evaluate(() => window.postMessage({ officeSolve: "zip" }, location.origin));
     await lobby.waitForTimeout(200);
     assert(scorePosts.length === 0, "獨立大廳不該送出分數");
+
+    async function readCatTile(page) {
+      await page.locator("#gname", { hasText: "2048 貓咪進化" }).waitFor();
+      const frame = page.frameLocator("#f-cat2048");
+      const img = frame.locator(".tile img").first();
+      await img.waitFor();
+      await page.waitForTimeout(300);
+      return img.evaluate(async (el) => {
+        if (!el.complete || el.naturalWidth === 0) {
+          await new Promise((resolve) => {
+            el.addEventListener("load", resolve, { once: true });
+            el.addEventListener("error", resolve, { once: true });
+          });
+        }
+        const tile = el.closest(".tile");
+        const face = el.parentElement;
+        const tileBox = tile.getBoundingClientRect();
+        const imgBox = el.getBoundingClientRect();
+        return {
+          src: el.getAttribute("src"),
+          naturalWidth: el.naturalWidth,
+          naturalHeight: el.naturalHeight,
+          fit: getComputedStyle(el).objectFit,
+          tileW: Math.round(tileBox.width),
+          tileH: Math.round(tileBox.height),
+          imgW: Math.round(imgBox.width),
+          imgH: Math.round(imgBox.height),
+          badge: face.querySelector(".num")?.textContent || "",
+          radius: Number.parseFloat(getComputedStyle(face).borderRadius),
+        };
+      });
+    }
+    await lobby.goto(`${ORIGIN}/games#cat2048`);
+    const catTile = await readCatTile(lobby);
+    assert(
+      catTile.src === "/games/cat2048/01_orange_cat.webp" || catTile.src === "/games/cat2048/02_white_cat.webp",
+      `起始貓咪圖應為橘貓或白貓，實際 ${JSON.stringify(catTile)}`,
+    );
+    assert(catTile.naturalWidth === 256 && catTile.naturalHeight === 256, `貓咪圖應為 256 正方形，實際 ${JSON.stringify(catTile)}`);
+    assert(catTile.fit === "cover", `貓咪圖應 cover，實際 ${JSON.stringify(catTile)}`);
+    assert(catTile.tileW === catTile.tileH && catTile.tileW > 40, `格子應維持正方形，實際 ${JSON.stringify(catTile)}`);
+    assert(Math.abs(catTile.imgW - catTile.tileW) <= 2 && Math.abs(catTile.imgH - catTile.tileH) <= 2, `圖片應填滿格子，實際 ${JSON.stringify(catTile)}`);
+    assert(catTile.badge === "2" || catTile.badge === "4", `數字徽章應可讀，實際 ${JSON.stringify(catTile)}`);
+    assert(catTile.radius >= 8, `格子應有圓角，實際 ${JSON.stringify(catTile)}`);
+    await shot(lobby, "cat2048");
+    const catSrcdoc = await lobby.locator("#f-cat2048").getAttribute("srcdoc");
+    assert(catSrcdoc.includes("10_star_cat.webp") && catSrcdoc.includes("glow:1"), "2048 以上應沿用星星貓並加上金光");
+    await lobby.evaluate(() => {
+      window.__catSave = new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(null), 2500);
+        addEventListener("message", function onMsg(event) {
+          const data = event.data && event.data.lobbySave;
+          if (!data || data.key !== "cat2048") return;
+          removeEventListener("message", onMsg);
+          clearTimeout(timer);
+          resolve(data.val);
+        });
+      });
+    });
+    await lobby.frameLocator("#f-cat2048").locator("body").evaluate(() => {
+      for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]) {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      }
+    });
+    const catSaved = await lobby.evaluate(() => window.__catSave);
+    assert(catSaved && Number.isFinite(catSaved.best), `移動後應回報分數，實際 ${JSON.stringify(catSaved)}`);
+    await lobby.frameLocator("#f-cat2048").getByRole("button", { name: "📖 貓咪圖鑑" }).click();
+    await lobby.frameLocator("#f-cat2048").locator("#dex img").nth(10).waitFor();
+    assert(await lobby.frameLocator("#f-cat2048").locator("#dex img").count() === 11, "圖鑑應列出 2 到 2048");
+    await shot(lobby, "cat2048-dex");
+
+    const arcadeLobby = await browser.newPage({ viewport: { width: 900, height: 700 } });
+    await arcadeLobby.goto(`${ORIGIN}/games/?from=office#cat2048`);
+    const arcadeTile = await readCatTile(arcadeLobby);
+    assert(arcadeTile.src.startsWith("/games/cat2048/") && arcadeTile.naturalWidth === 256, `街機覆蓋層也應載入同一批圖，實際 ${JSON.stringify(arcadeTile)}`);
+    await arcadeLobby.close();
     await lobby.close();
 
     const adminContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
