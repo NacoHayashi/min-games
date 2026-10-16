@@ -1,5 +1,5 @@
 /**
- * Rebuild public/index.html from games/*.html.
+ * Rebuild public/games/index.html from games/*.html.
  *
  * The lobby is one self-contained page. Each game is embedded as an iframe
  * srcdoc string inside a <script> block. Strings are JSON-encoded, then every
@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const gamesDir = join(root, "games");
-const outFile = join(root, "public", "index.html");
+const outFile = join(root, "public", "games", "index.html");
 
 /** Lobby order. `name` is the in-game header; it defaults to `title`. */
 const GAMES = [
@@ -98,7 +98,7 @@ function card(game) {
 /** Real page, not an embedded game: the office needs its own WebSocket. */
 function officeCard() {
   return (
-    `<a class="card" href="/office/">` +
+    `<a class="card" href="/" id="office-card">` +
     `<div class="ic" style="background:linear-gradient(135deg,#f7b4d4,#7aa2ff)">` +
     `<svg viewBox="0 0 100 100" fill="#fff"><rect x="18" y="28" width="64" height="52" rx="8"/>` +
     `<rect x="30" y="40" width="16" height="12" rx="2" fill="#7aa2ff"/>` +
@@ -146,15 +146,24 @@ const html = `<!DOCTYPE html><html lang="zh-Hant-TW"><head><meta charset="UTF-8"
 <div id="game"><div class="top"><button id="back">← 大廳</button><b id="gname"></b></div><div id="frames"></div></div>
 <script>
 const GAMES={${embedded}};const NAMES={${names}};const frames={};
+const FROM_OFFICE=new URLSearchParams(location.search).get('from')==='office';
+if(FROM_OFFICE){const card=document.getElementById('office-card');if(card)card.remove()}
+function relayScore(payload){if(!FROM_OFFICE||parent===window||!payload)return;try{parent.postMessage({officeScore:payload},location.origin)}catch(e){}}
+function matchCleared(mem){const stars=mem&&Array.isArray(mem.stars)?mem.stars:[];let n=0;stars.forEach((s,i)=>{if(s>0)n=Math.max(n,i+1)});return n}
+function reportBbq(){if(!FROM_OFFICE)return;let n=0;try{n=+localStorage.getItem('yakiniku_best_v1')||0}catch(e){}if(n>0)relayScore({game:'bbq',score:Math.round(n)})}
+let playing='';
 function route(){const k=location.hash.slice(1);const g=document.getElementById('game');
-  if(!GAMES[k]){g.classList.remove('show');document.getElementById('lobby').style.display='';document.title='小遊戲大廳';return}
-  document.getElementById('lobby').style.display='none';g.classList.add('show');document.getElementById('gname').textContent=NAMES[k];document.title=NAMES[k];
+  if(playing==='bbq'&&k!=='bbq')reportBbq();
+  if(!GAMES[k]){playing='';g.classList.remove('show');document.getElementById('lobby').style.display='';document.title='小遊戲大廳';return}
+  playing=k;document.getElementById('lobby').style.display='none';g.classList.add('show');document.getElementById('gname').textContent=NAMES[k];document.title=NAMES[k];
   for(const f of Object.values(frames))f.classList.remove('on');
   if(!frames[k]){const f=document.createElement('iframe');f.title=NAMES[k];f.id='f-'+k;f.className='on';f.srcdoc=GAMES[k];document.getElementById('frames').appendChild(f);frames[k]=f}
   else frames[k].classList.add('on')}
 let nav=0;document.getElementById('back').onclick=()=>{if(nav>0){nav--;history.back()}else location.hash=''};
-addEventListener('message',e=>{const d=e.data||{};try{if(d.lobbySave)localStorage.setItem('lobby_'+d.lobbySave.key,JSON.stringify(d.lobbySave.val));if(d.lobbyLoad){const v=JSON.parse(localStorage.getItem('lobby_'+d.lobbyLoad)||'null');if(v)e.source.postMessage({lobbyData:{key:d.lobbyLoad,val:v}},'*')}if(d.m3save)localStorage.setItem('lobby_m3',JSON.stringify(d.m3save));
-  if(d.m3load){const v=JSON.parse(localStorage.getItem('lobby_m3')||'null');if(v)e.source.postMessage({m3data:v},'*')}}catch(_){}});
+addEventListener('message',e=>{const d=e.data||{};try{if(d.lobbySave){localStorage.setItem('lobby_'+d.lobbySave.key,JSON.stringify(d.lobbySave.val));if(d.lobbySave.key==='cat2048'&&d.lobbySave.val)relayScore({game:'cat2048',score:Math.round(+d.lobbySave.val.best||0)})}if(d.lobbyLoad){const v=JSON.parse(localStorage.getItem('lobby_'+d.lobbyLoad)||'null');if(v)e.source.postMessage({lobbyData:{key:d.lobbyLoad,val:v}},'*')}if(d.m3save){localStorage.setItem('lobby_m3',JSON.stringify(d.m3save));relayScore({game:'match3',score:matchCleared(d.m3save)})}
+  if(d.m3load){const v=JSON.parse(localStorage.getItem('lobby_m3')||'null');if(v)e.source.postMessage({m3data:v},'*')}
+  if(typeof d.officeSolve==='string')relayScore({game:d.officeSolve,op:'solve'})}catch(_){}});
+addEventListener('storage',e=>{if(e.key==='yakiniku_best_v1')reportBbq()});
 addEventListener('hashchange',()=>{if(GAMES[location.hash.slice(1)])nav++;else nav=0;route()});route();
 </script></body></html>`;
 

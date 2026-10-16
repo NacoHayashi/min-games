@@ -68,7 +68,7 @@ function render(){cells.forEach((d,i)=>{const v=val[i];d.querySelector('.v').tex
   d.classList.toggle('given',!!pz.puzzle[i]);d.classList.toggle('sel',i===sel);
   
   d.classList.toggle('bad',!!v&&!ok(val,i,v))});
-  if(val.every((v,i)=>v&&ok(val,i,v))){done=true;setTimeout(()=>$('win').classList.add('show'),300)}}
+  if(val.every((v,i)=>v&&ok(val,i,v))){done=true;try{parent.postMessage({officeSolve:'sudoku'},'*')}catch(e){}setTimeout(()=>$('win').classList.add('show'),300)}}
 function groups(){const g=[];for(let k=0;k<6;k++){g.push([...Array(6)].map((_,j)=>k*6+j));g.push([...Array(6)].map((_,j)=>j*6+k))}
   for(let b=0;b<6;b++)g.push([...Array(36).keys()].filter(i=>box(i)===b));return g}
 const GROUPS=groups();

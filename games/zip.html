@@ -95,7 +95,7 @@ function tryMove(c){if(done||c<0)return;const end=path[path.length-1];if(c===end
   if(!nbrs(pz.N,end).includes(c)||wset.has(Math.min(c,end)+','+Math.max(c,end)))return;
   if(pz.nums[c]&&pz.nums[c]!==lastNum()+1)return;
   path.push(c);draw();check()}
-function check(){if(path.length===pz.N*pz.N){if(validate(pz,path)){done=true;setTimeout(()=>$('win').classList.add('show'),250)}else $('msg').textContent='要以最大的數字結尾喔！'}else $('msg').textContent=''}
+function check(){if(path.length===pz.N*pz.N){if(validate(pz,path)){done=true;try{parent.postMessage({officeSolve:'zip'},'*')}catch(e){}setTimeout(()=>$('win').classList.add('show'),250)}else $('msg').textContent='要以最大的數字結尾喔！'}else $('msg').textContent=''}
 cv.addEventListener('pointerdown',e=>{if(done)return;hist.push(path.slice());if(hist.length>200)hist.shift();drag=true;cv.setPointerCapture(e.pointerId);const c=cellAt(e);
   if(c===path[0]&&path.length>1){path=[path[0]];draw()}else tryMove(c)});
 cv.addEventListener('pointermove',e=>{if(!drag)return;const c=cellAt(e);if(c<0)return;

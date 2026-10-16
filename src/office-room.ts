@@ -125,8 +125,19 @@ function readAccessories(raw: string | null): Accessories {
   }
 }
 
+const SCORE_GAMES: Record<string, { title: string; unit: string; mode: "max" | "inc"; max: number }> = {
+  cat2048: { title: "2048 貓咪進化", unit: "分", mode: "max", max: 2_000_000 },
+  match3: { title: "皇家消消樂", unit: "關", mode: "max", max: 10 },
+  zip: { title: "Zip", unit: "題", mode: "inc", max: 100_000 },
+  queens: { title: "Queens 貓掌版", unit: "題", mode: "inc", max: 100_000 },
+  sudoku: { title: "Mini Sudoku", unit: "題", mode: "inc", max: 100_000 },
+  patches: { title: "Patches 拼布", unit: "題", mode: "inc", max: 100_000 },
+  bbq: { title: "燒肉屋", unit: "元", mode: "max", max: 100_000_000 },
+};
+
 export class OfficeRoom implements DurableObject {
   private readonly map: OfficeMap = OFFICE;
+  private readonly scoreHits = new Map<string, number[]>();
 
   constructor(
     private readonly ctx: DurableObjectState,
@@ -153,6 +164,8 @@ export class OfficeRoom implements DurableObject {
       if (path === "/api/office/me" && request.method === "GET") return this.me(request);
       if (path === "/api/office/me" && request.method === "PUT") return await this.updateMe(request);
       if (path === "/api/office/ws" && request.method === "GET") return this.upgrade(request, url);
+      if (path === "/api/office/score" && request.method === "POST") return await this.submitScore(request);
+      if (path === "/api/office/leaderboard" && request.method === "GET") return this.leaderboard(request);
       if (path.startsWith("/api/office/admin/")) return await this.admin(request, path);
       return json({ error: "找不到" }, 404);
     } catch (error) {
@@ -227,6 +240,13 @@ export class OfficeRoom implements DurableObject {
       x REAL NOT NULL,
       y REAL NOT NULL,
       rot INTEGER NOT NULL DEFAULT 0
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS scores (
+      member_id TEXT NOT NULL,
+      game TEXT NOT NULL,
+      score INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (member_id, game)
     )`);
     const seeded = this.meta("seeded");
     if (seeded === "1") return;
@@ -413,6 +433,98 @@ export class OfficeRoom implements DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  private scoreOf(memberId: string, game: string): number {
+    const rows = this.sql
+      .exec<{ score: number }>(`SELECT score FROM scores WHERE member_id = ? AND game = ?`, memberId, game)
+      .toArray();
+    return rows[0] ? Number(rows[0].score) : 0;
+  }
+
+  private allowScore(memberId: string, game: string, limit: number, windowMs: number): boolean {
+    const key = `${memberId}:${game}`;
+    const now = Date.now();
+    const hits = (this.scoreHits.get(key) || []).filter((at) => now - at < windowMs);
+    if (hits.length >= limit) {
+      this.scoreHits.set(key, hits);
+      return false;
+    }
+    hits.push(now);
+    this.scoreHits.set(key, hits);
+    return true;
+  }
+
+  private writeScore(memberId: string, game: string, score: number) {
+    this.sql.exec(`DELETE FROM scores WHERE member_id = ? AND game = ?`, memberId, game);
+    this.sql.exec(
+      `INSERT INTO scores (member_id, game, score, updated_at) VALUES (?, ?, ?, ?)`,
+      memberId,
+      game,
+      score,
+      Date.now(),
+    );
+  }
+
+  private async submitScore(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    const member = this.memberByToken(bearer(request));
+    if (!member) return json({ error: "請先進入辦公室" }, 401);
+    if (!body) return json({ error: "格式不對" }, 400);
+    const game = typeof body.game === "string" ? body.game : "";
+    const spec = SCORE_GAMES[game];
+    if (!spec) return json({ error: "沒有這個遊戲" }, 400);
+    const current = this.scoreOf(member.id, game);
+    if (spec.mode === "inc") {
+      if (body.op !== "solve") return json({ error: "分數不對" }, 400);
+      if (current >= spec.max) return json({ error: "分數不對" }, 400);
+      if (!this.allowScore(member.id, game, 1, 800)) return json({ error: "太快了，稍等一下" }, 429);
+      const next = current + 1;
+      this.writeScore(member.id, game, next);
+      this.broadcast({ t: "score", game });
+      return json({ ok: true, game, score: next });
+    }
+    const raw = body.score;
+    const score = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : NaN;
+    if (!Number.isInteger(score) || Math.abs((raw as number) - score) > 1e-6 || score < 0 || score > spec.max) {
+      return json({ error: "分數不對" }, 400);
+    }
+    if (score <= current) return json({ ok: true, game, score: current });
+    if (!this.allowScore(member.id, game, 8, 5000)) return json({ error: "太快了，稍等一下" }, 429);
+    this.writeScore(member.id, game, score);
+    this.broadcast({ t: "score", game });
+    return json({ ok: true, game, score });
+  }
+
+  private leaderboard(request: Request): Response {
+    const member = this.memberByToken(bearer(request));
+    if (!member) return json({ error: "請先進入辦公室" }, 401);
+    const games = Object.entries(SCORE_GAMES).map(([id, spec]) => {
+      const rows = this.sql
+        .exec<{ member_id: string; display_name: string; score: number }>(
+          `SELECT s.member_id, m.display_name, s.score
+           FROM scores s JOIN members m ON m.id = s.member_id
+           WHERE s.game = ?
+           ORDER BY s.score DESC, s.updated_at ASC, s.member_id ASC`,
+          id,
+        )
+        .toArray();
+      const ranked = rows.map((row, index) => ({
+        rank: index + 1,
+        id: row.member_id,
+        displayName: row.display_name,
+        score: Number(row.score),
+      }));
+      const mine = ranked.find((row) => row.id === member.id) || null;
+      return {
+        id,
+        title: spec.title,
+        unit: spec.unit,
+        top: ranked.slice(0, 10),
+        me: mine ? { rank: mine.rank, score: mine.score } : null,
+      };
+    });
+    return json({ games });
+  }
+
   private async admin(request: Request, path: string): Promise<Response> {
     // Worker secrets are not visible on this Durable Object. The top-level
     // Worker checks ADMIN_TOKEN and only then sets this header.
@@ -480,6 +592,7 @@ export class OfficeRoom implements DurableObject {
     const checked = checkId(id);
     if (!checked.ok || !this.memberById(checked.id)) return json({ error: "找不到這個 ID" }, 404);
     this.sql.exec(`DELETE FROM members WHERE id = ?`, checked.id);
+    this.sql.exec(`DELETE FROM scores WHERE member_id = ?`, checked.id);
     for (const ws of this.ctx.getWebSockets(checked.id)) this.goodbye(ws, "removed");
     return json({ ok: true });
   }
