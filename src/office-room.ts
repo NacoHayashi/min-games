@@ -92,13 +92,13 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function tokenEqual(input: string, expected: string): Promise<boolean> {
+export async function tokenEqual(input: string, expected: string): Promise<boolean> {
   if (!input || !expected) return false;
   const [left, right] = await Promise.all([sha256(input), sha256(expected)]);
   return safeEqual(left, right);
 }
 
-function bearer(request: Request): string {
+export function bearer(request: Request): string {
   const header = request.headers.get("Authorization") || "";
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
 }
@@ -130,8 +130,9 @@ export class OfficeRoom implements DurableObject {
 
   constructor(
     private readonly ctx: DurableObjectState,
-    private readonly env: Env,
+    env: Env,
   ) {
+    void env;
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     ctx.blockConcurrencyWhile(async () => {
       this.ensureSchema();
@@ -413,11 +414,10 @@ export class OfficeRoom implements DurableObject {
   }
 
   private async admin(request: Request, path: string): Promise<Response> {
-    if (!this.env.ADMIN_TOKEN) {
-      return json({ error: "伺服器尚未設定 ADMIN_TOKEN。請先在 Cloudflare 設定密鑰。" }, 503);
-    }
-    if (!(await tokenEqual(bearer(request), this.env.ADMIN_TOKEN))) {
-      return json({ error: "管理員權杖不正確" }, 401);
+    // Worker secrets are not visible on this Durable Object. The top-level
+    // Worker checks ADMIN_TOKEN and only then sets this header.
+    if (request.headers.get("x-office-admin") !== "1") {
+      return json({ error: "未授權" }, 401);
     }
     if (path === "/api/office/admin/overview" && request.method === "GET") return json(this.overview());
     if (path === "/api/office/admin/password" && request.method === "POST") return await this.setPassword(request);

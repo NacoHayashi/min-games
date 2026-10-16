@@ -118,7 +118,14 @@ npx wrangler secret put ADMIN_TOKEN
 
 或是到 Cloudflare 控制台：Workers → `min-games` → Settings → Variables and Secrets，新增 Secret `ADMIN_TOKEN`。
 
-沒有這個密鑰時，`/office/admin` 無法登入。
+沒有這個密鑰時，`/office/admin` 無法登入。密鑰是在最外層 Worker 讀的，不要寫進 `wrangler.toml` 的 `[vars]`（同名變數會在部署時蓋掉 Secret）。`keep_vars = true` 讓控制台上的純文字變數不會被下次 `wrangler deploy` 清掉；Secret 本身部署時會保留。
+
+確認這次部署看得到密鑰（只回布林，沒有內容）：
+
+```bash
+curl https://你的網域/api/office/admin/health
+# {"hasAdminToken":true}
+```
 
 ### 上線後
 

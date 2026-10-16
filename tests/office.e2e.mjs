@@ -142,6 +142,13 @@ async function main() {
       if (i === 39) throw new Error(`狀態 API ${status.status}`);
       await new Promise((resolve) => setTimeout(resolve, 300));
     }
+    const healthResponse = await fetch(`${ORIGIN}/api/office/admin/health`);
+    const health = await healthResponse.json();
+    assert(healthResponse.ok && health.hasAdminToken === true, `health 應看到密鑰，實際 ${JSON.stringify(health)}`);
+    assert(Object.keys(health).length === 1, "health 不該帶出密鑰內容");
+    const spoof = await fetch(`${ORIGIN}/api/office/admin/overview`, { headers: { "x-office-admin": "1" } });
+    assert(spoof.status === 401, `偽造管理標頭應為 401，實際 ${spoof.status}`);
+
     browser = await chromium.launch();
     const lobby = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await lobby.goto(`${ORIGIN}/`);

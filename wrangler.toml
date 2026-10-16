@@ -2,6 +2,11 @@ name = "min-games"
 main = "src/index.ts"
 compatibility_date = "2026-10-12"
 
+# Dashboard plain-text vars are deleted on `wrangler deploy` unless this is set.
+# Secrets are kept by Wrangler itself. Do not put ADMIN_TOKEN in [vars]: a var
+# of the same name replaces the secret on deploy.
+keep_vars = true
+
 # The lobby and the office client are static files in ./public.
 # Only /api/* is handled by the Worker (Durable Object + WebSocket).
 [assets]
