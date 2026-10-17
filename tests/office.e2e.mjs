@@ -37,7 +37,40 @@ async function shot(page, name) {
 }
 
 async function ready(page) {
-  await page.waitForFunction(() => window.office && window.office.ready, null, { timeout: 15000 });
+  await page.waitForFunction(() => window.office && window.office.ready, null, { timeout: 30000 });
+}
+
+async function settleView(page) {
+  await page.evaluate(() => { window.__viewSettle = null; });
+  await page.waitForFunction(() => {
+    const me = window.office.me;
+    if (!me) return false;
+    const point = window.office.worldToScreen(me.x, me.y);
+    const prev = window.__viewSettle;
+    window.__viewSettle = { x: point.x, y: point.y, mode: window.office.cameraMode, dist: window.office.cameraDist };
+    if (!prev || prev.mode !== window.office.cameraMode) return false;
+    return Math.hypot(point.x - prev.x, point.y - prev.y) < 0.4 && Math.abs(prev.dist - window.office.cameraDist) < 1;
+  });
+}
+
+async function march(page, x, y) {
+  const start = await page.evaluate(() => ({ x: window.office.me.x, y: window.office.me.y }));
+  const points = [
+    [x, start.y],
+    [x, y - 48],
+    [x, y],
+  ];
+  for (const [tx, ty] of points) {
+    const from = await page.evaluate(() => ({ x: window.office.me.x, y: window.office.me.y }));
+    const dist = Math.hypot(tx - from.x, ty - from.y);
+    const steps = Math.max(1, Math.ceil(dist / 20));
+    for (let i = 1; i <= steps; i++) {
+      const px = from.x + ((tx - from.x) * i) / steps;
+      const py = from.y + ((ty - from.y) * i) / steps;
+      await page.evaluate(({ px, py }) => window.office.place(px, py), { px, py });
+      await page.waitForTimeout(45);
+    }
+  }
 }
 
 async function walkTo(page, x, y) {
@@ -45,7 +78,13 @@ async function walkTo(page, x, y) {
   await page.waitForFunction(({ x, y }) => {
     const me = window.office.me;
     return Math.hypot(me.x - x, me.y - y) < 36;
-  }, { x, y }, { timeout: 20000 });
+  }, { x, y }, { timeout: 30000 }).catch(async (error) => {
+    const where = await page.evaluate(() => {
+      const me = window.office.me;
+      return me ? `${me.id} @ ${Math.round(me.x)},${Math.round(me.y)}` : "no me";
+    });
+    throw new Error(`走不到 ${Math.round(x)},${Math.round(y)}（${where}）`, { cause: error });
+  });
 }
 
 async function clickWalk(page, x, y) {
@@ -87,6 +126,24 @@ async function register(page, id, name, animal) {
   await page.getByRole("button", { name: "下一步" }).click();
   await page.getByRole("button", { name: animal, exact: true }).click();
   if (id === "naco") {
+    const rejected = await page.evaluate(async () => {
+      const response = await fetch("/api/office/me", {
+        method: "PUT",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${localStorage.getItem("office_session")}`,
+        },
+        body: JSON.stringify({ animal: "custom", look: { v: 2, body: "nope", colors: { body: "red" } } }),
+      });
+      return response.status;
+    });
+    assert(rejected === 400, `不合法造型應為 400，實際 ${rejected}`);
+    await page.getByRole("button", { name: "顏色", exact: true }).click();
+    await page.getByRole("button", { name: "身體", exact: true }).waitFor();
+    const preview3d = await page.evaluate(() => window.office.preview3d === true);
+    assert(preview3d, "造型預覽應該用 WebGL 畫出 3D 角色");
+    await shot(page, "customizer");
+    await page.getByRole("button", { name: "配件", exact: true }).click();
     await page.getByRole("button", { name: "毛帽" }).click();
     await shot(page, "avatar-chooser");
   }
@@ -157,7 +214,9 @@ async function main() {
     const spoof = await fetch(`${ORIGIN}/api/office/admin/overview`, { headers: { "x-office-admin": "1" } });
     assert(spoof.status === 401, `偽造管理標頭應為 401，實際 ${spoof.status}`);
 
-    browser = await chromium.launch();
+    browser = await chromium.launch({
+      args: ["--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"],
+    });
     const lobby = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     const officeRedirect = await fetch(`${ORIGIN}/office/`, { redirect: "manual" });
     assert(officeRedirect.status === 302, `/office 應轉到首頁，實際 ${officeRedirect.status}`);
@@ -296,7 +355,7 @@ async function main() {
     assert(bad.status() === 401, `錯誤密碼應為 401，實際 ${bad.status()}`);
 
     await register(naco, "naco", "納可", "貓");
-    assert((await naco.evaluate(() => window.office.me.accessories.hat)) === "beanie", "毛帽沒有存下來");
+    assert((await naco.evaluate(() => window.office.me.look.head)) === "beanie", "毛帽沒有存下來");
 
     await momo.goto(`${ORIGIN}/`);
     await momo.getByLabel("辦公室密碼").fill(PASS);
@@ -316,7 +375,202 @@ async function main() {
     await ready(momo);
     await naco.waitForFunction(() => window.office.others.some((person) => person.id === "momo"));
     await momo.waitForFunction(() => window.office.others.some((person) => person.id === "naco"));
+    const spawnGap = await naco.evaluate(() => {
+      const other = window.office.others.find((person) => person.id === "momo");
+      return Math.hypot(window.office.me.x - other.x, window.office.me.y - other.y);
+    });
+    assert(spawnGap >= 64, `兩位玩家不該出生在同一個點，距離 ${spawnGap}`);
     await shot(naco, "office-two-players");
+    assert((await naco.evaluate(() => window.office.view3d)) === true, "辦公室應該用 WebGL 畫出來");
+    assert((await naco.evaluate(() => window.office.cameraMode)) === "iso", "預設應該是俯瞰鏡頭");
+    await settleView(naco);
+    await naco.waitForTimeout(1200);
+    await shot(naco, "office-iso");
+    const isoDist = await naco.evaluate(() => window.office.cameraDist);
+    const isoYaw = await naco.evaluate(() => window.office.cameraYaw);
+
+    await march(momo, 614, 560);
+    await march(naco, 860, 560);
+    const cast = [
+      { id: "foxie", name: "小狐", animal: "fox", x: 696, y: 560 },
+      { id: "doggo", name: "小狗", animal: "dog", x: 778, y: 560 },
+      { id: "beary", name: "小熊", animal: "bear", x: 942, y: 560 },
+      { id: "pandy", name: "圓圓", animal: "panda", x: 1024, y: 560 },
+      { id: "penny", name: "企企", animal: "penguin", x: 1106, y: 560 },
+      { id: "froggy", name: "青青", animal: "frog", x: 1188, y: 560 },
+    ];
+    await naco.evaluate((people) => window.office.poseCast(people), cast);
+    await naco.evaluate(() => window.office.setView({ dist: 800 }));
+    await settleView(naco);
+    await naco.waitForTimeout(1200);
+    await shot(naco, "office-animals");
+    await naco.evaluate((ids) => window.office.clearCast(ids), cast.map((person) => person.id));
+
+    const customHome = await naco.evaluate(() => ({
+      x: window.office.me.x,
+      y: window.office.me.y,
+      look: window.office.me.look,
+      animal: window.office.me.animal,
+    }));
+    const momoHome = await momo.evaluate(() => ({ x: window.office.me.x, y: window.office.me.y }));
+    const colors = (body, extra = {}) => ({
+      body,
+      ear: extra.ear || body,
+      inner: extra.inner || "#ffffff",
+      tip: extra.tip || "#4a1c0c",
+      belly: extra.belly || "#fffdfb",
+      tail: extra.tail || body,
+      blush: extra.blush || "#ff709c",
+    });
+    const custom = (partial) => ({
+      v: 2,
+      body: "bean",
+      ears: "none",
+      tail: "none",
+      belly: true,
+      eyes: "highlight",
+      mouth: "omega",
+      blush: "oval",
+      marking: "none",
+      head: "none",
+      face: "none",
+      neck: "none",
+      held: "none",
+      ...partial,
+      colors: colors(partial.colors?.body || "#f06292", partial.colors || {}),
+    });
+    const lineup = [
+      custom({ body: "pear", ears: "fox", tail: "bush", head: "flower", mouth: "omega", colors: colors("#f06a28", { inner: "#ff7a62", tip: "#4a1c0c", tail: "#f06a28", belly: "#fff1e4" }) }),
+      custom({ body: "wide", ears: "long", tail: "puff", head: "ribbon", eyes: "sparkle", colors: colors("#fff8fc", { ear: "#f7c2d8", inner: "#d45388", tail: "#fffdfb" }) }),
+      custom({ body: "mochi", ears: "flop", tail: "curl", eyes: "sleepy", mouth: "smile", neck: "scarf", colors: colors("#e0a045", { ear: "#b56a32", inner: "#f6d7b0", tail: "#b56a32", belly: "#fff0d0" }) }),
+      custom({ body: "bean", ears: "round", tail: "nub", belly: false, marking: "panda", blush: "none", mouth: "smile", colors: colors("#fffdfb", { ear: "#1a1a22", inner: "#3a3544", tip: "#1a1a22" }) }),
+      custom({ body: "bean", ears: "none", tail: "none", mouth: "beak", blush: "none", face: "sun", head: "crown", colors: colors("#243356", { belly: "#fffdfb", inner: "#f0a050" }) }),
+      custom({ body: "wide", ears: "nub", tail: "thin", eyes: "happy", mouth: "wide", blush: "lines", marking: "freckles", held: "balloon", colors: colors("#3cb85c", { belly: "#dff5b0", tail: "#2e8b46", blush: "#ff709c" }) }),
+    ];
+    const spots = [600, 720, 840, 960, 1080, 1200];
+    await momo.evaluate(() => window.office.place(48, 48));
+    await naco.evaluate((x) => window.office.place(x, 560), spots[2]);
+    await naco.evaluate((look) => window.office.applyLook(look, "custom"), lineup[2]);
+    await naco.evaluate((people) => window.office.poseCast(people), lineup.map((look, index) => ({
+      id: `custom-${index}`,
+      name: `造型${index + 1}`,
+      animal: "custom",
+      look,
+      x: spots[index],
+      y: 560,
+    })).filter((_, index) => index !== 2));
+    await naco.evaluate(() => window.office.setView({ dist: 980 }));
+    await settleView(naco);
+    await naco.waitForTimeout(1200);
+    await shot(naco, "office-custom");
+    await naco.evaluate(() => window.office.clearCast(["custom-0", "custom-1", "custom-3", "custom-4", "custom-5"]));
+    await naco.evaluate((savedLook) => window.office.applyLook(savedLook.look, savedLook.animal), customHome);
+    await naco.evaluate(({ x, y }) => window.office.place(x, y), customHome);
+    await momo.evaluate(({ x, y }) => window.office.place(x, y), momoHome);
+    await naco.evaluate(({ yaw, dist }) => window.office.setView({ yaw, dist }), { yaw: isoYaw, dist: isoDist });
+    await settleView(naco);
+    await naco.getByRole("button", { name: "俯瞰" }).click();
+    await naco.getByRole("button", { name: "跟隨" }).waitFor();
+    assert((await naco.evaluate(() => window.office.cameraMode)) === "follow", "按鈕應該切到跟隨鏡頭");
+    await settleView(naco);
+    await shot(naco, "office-follow");
+    await naco.keyboard.press("v");
+    await naco.getByRole("button", { name: "俯瞰" }).waitFor();
+    await settleView(naco);
+
+    await naco.evaluate(() => window.office.place(620, 560));
+    await momo.evaluate(() => window.office.place(900, 560));
+    await naco.waitForFunction(() => {
+      const other = window.office.others.find((person) => person.id === "momo");
+      return other && Math.hypot(other.x - 900, other.y - 560) < 48;
+    });
+    await naco.evaluate(() => {
+      const other = window.office.others.find((person) => person.id === "momo");
+      window.office.walkTo(other.x, other.y);
+    });
+    await momo.evaluate(() => {
+      const other = window.office.others.find((person) => person.id === "naco");
+      window.office.walkTo(other.x, other.y);
+    });
+    const push = await naco.evaluate(async () => {
+      let min = Infinity;
+      let minGap = Infinity;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        const other = window.office.others.find((person) => person.id === "momo");
+        min = Math.min(min, Math.hypot(window.office.me.x - other.x, window.office.me.y - other.y));
+        const gap = window.office.gap("momo");
+        if (typeof gap === "number") minGap = Math.min(minGap, gap);
+      }
+      const other = window.office.others.find((person) => person.id === "momo");
+      return {
+        min,
+        minGap,
+        sum: window.office.radius(window.office.me.look) + window.office.radius(other.look),
+      };
+    });
+    assert(push.min >= push.sum - 14, `兩人擠在一起時重疊了，距離 ${push.min.toFixed(1)}，半徑和 ${push.sum}`);
+    assert(push.minGap >= push.sum - 8, `畫面上還是疊在一起，距離 ${push.minGap.toFixed(1)}，半徑和 ${push.sum}`);
+
+    await momo.evaluate(() => window.office.place(180, 200));
+    await naco.evaluate(() => window.office.place(720, 560));
+    const bunch = ["fox", "rabbit", "panda", "frog", "dog"].map((animal, index) => ({
+      id: `bunch-${index}`,
+      name: `擠${index + 1}`,
+      animal,
+      x: 720 + (index - 2) * 6,
+      y: 560,
+    }));
+    await naco.evaluate((people) => window.office.poseCast(people), bunch);
+    await naco.evaluate(() => window.office.setView({ dist: 760 }));
+    await settleView(naco);
+    await naco.waitForTimeout(900);
+    await shot(naco, "office-bunch");
+    await naco.evaluate((ids) => window.office.clearCast(ids), bunch.map((person) => person.id));
+    await naco.evaluate(({ yaw, dist }) => window.office.setView({ yaw, dist }), { yaw: isoYaw, dist: isoDist });
+    await settleView(naco);
+
+    const chairs = await naco.evaluate(() => window.office.furniture
+      .filter((item) => item.kind === "chair" && item.id.startsWith("desk-"))
+      .slice(0, 2)
+      .map((item) => ({ id: item.id, x: item.x + 16, y: item.y + 13 })));
+    await naco.evaluate((spot) => window.office.place(spot.x, spot.y), chairs[0]);
+    await naco.waitForTimeout(200);
+    await naco.keyboard.press("e");
+    await naco.waitForFunction((id) => window.office.seat === id, chairs[0].id);
+    await momo.waitForFunction((id) => window.office.others.some((person) => person.id === "naco" && person.seat === id), chairs[0].id);
+    const beforeGlide = await momo.evaluate(() => window.office.others.find((person) => person.id === "naco").x);
+    await naco.evaluate(() => window.office.drive(1, 0));
+    await naco.waitForTimeout(800);
+    await naco.evaluate(() => window.office.drive(0, 0));
+    await naco.waitForFunction((id) => {
+      const item = window.office.furniture.find((entry) => entry.id === id);
+      return item && (item.speed || 0) < 1;
+    }, chairs[0].id);
+    const afterGlide = await naco.evaluate((id) => window.office.furniture.find((item) => item.id === id).x, chairs[0].id);
+    assert(afterGlide > chairs[0].x - 4, `椅子沒有滑出去，x=${afterGlide}，中心 ${chairs[0].x}`);
+    await momo.waitForFunction((start) => {
+      const person = window.office.others.find((item) => item.id === "naco");
+      return person && person.x > start + 12;
+    }, beforeGlide);
+    await momo.evaluate((spot) => window.office.place(spot.x, spot.y), chairs[1]);
+    await momo.waitForTimeout(200);
+    await momo.keyboard.press("e");
+    await momo.waitForFunction((id) => window.office.seat === id, chairs[1].id);
+    await naco.evaluate(() => window.office.setView({ dist: 980 }));
+    await settleView(naco);
+    await naco.waitForTimeout(400);
+    await shot(naco, "office-chairs");
+    const parked = await naco.evaluate((id) => window.office.furniture.find((item) => item.id === id).x, chairs[0].id);
+    await naco.keyboard.press("e");
+    await momo.keyboard.press("e");
+    await naco.waitForFunction(() => !window.office.seat);
+    await momo.waitForFunction(() => !window.office.seat);
+    await momo.waitForFunction(() => window.office.others.some((person) => person.id === "naco" && !person.seat));
+    const stayed = await naco.evaluate((id) => window.office.furniture.find((item) => item.id === id).x, chairs[0].id);
+    assert(Math.abs(stayed - parked) < 6, `起立後椅子應留在原地，${parked} -> ${stayed}`);
+    await naco.evaluate(({ yaw, dist }) => window.office.setView({ yaw, dist }), { yaw: isoYaw, dist: isoDist });
+    await settleView(naco);
 
     await admin.getByText("在線", { exact: true }).first().waitFor();
     await admin.locator('tr[data-id="naco"]').getByText("在線").waitFor();
@@ -363,6 +617,100 @@ async function main() {
     await momo.waitForFunction(() => window.office.bubbles.some((bubble) => bubble.id === "naco" && bubble.text.includes("午安")));
     await shot(momo, "chat-bubble");
 
+    const hanaContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const hana = await hanaContext.newPage();
+    hana.on("pageerror", (error) => console.log("PAGE", error.message));
+    hana.on("console", (msg) => {
+      if (msg.type() === "error") console.log("CONSOLE", msg.text());
+    });
+    await register(hana, "hana", "花", "狗");
+    await naco.evaluate(() => window.office.place(640, 340));
+    await momo.evaluate(() => window.office.place(730, 340));
+    await march(hana, 900, 340);
+    await naco.waitForFunction(() => {
+      const other = window.office.others.find((person) => person.id === "momo");
+      return other && Math.hypot(window.office.me.x - other.x, window.office.me.y - other.y) < 112;
+    });
+    await naco.waitForFunction(() => document.querySelector("#hint").textContent.includes("按 F 跟 @momo 說悄悄話"));
+    await naco.locator("#chat-input").blur();
+    await naco.keyboard.press("f");
+    await naco.waitForFunction(() => window.office.group.includes("momo") && window.office.group.includes("naco") && window.office.group.length === 2);
+    await momo.waitForFunction(() => window.office.group.includes("naco") && window.office.group.length === 2);
+    await momo.waitForFunction(() => document.querySelector("#hint").textContent.includes("@naco") && document.querySelector("#hint").textContent.includes("悄悄話"));
+    await naco.waitForFunction(() => {
+      const label = document.querySelector("#chat-whisper-label");
+      const list = document.querySelector("#chat-whisper-list");
+      return label && label.textContent === "悄悄話（2 人）" && list.textContent.includes("@momo") && list.textContent.includes("@naco");
+    });
+    await naco.locator("#chat-input").focus();
+    await naco.keyboard.press("f");
+    assert((await naco.evaluate(() => window.office.group.includes("momo"))) , "打字時按 F 不該離開悄悄話");
+    await naco.locator("#chat-input").fill("秘密桃子");
+    await naco.locator("#chat-input").press("Enter");
+    await momo.waitForFunction(() => window.office.bubbles.some((bubble) => bubble.whisper && bubble.text.includes("秘密桃子")));
+    await momo.waitForFunction(() => {
+      const node = document.querySelector('.floater[data-id="naco"] .bubble');
+      return node && node.classList.contains("whisper") && node.textContent.includes("秘密桃子");
+    });
+    await hana.waitForFunction(() => {
+      const mine = document.querySelector('.floater[data-id="naco"] .bubble');
+      const hers = document.querySelector('.floater[data-id="momo"] .bubble');
+      return mine && hers && mine.classList.contains("secret") && hers.classList.contains("secret") && mine.textContent.includes("對話中") && hers.textContent.includes("對話中");
+    });
+    const leaked = await hana.evaluate(() => window.office.tape.some((item) => JSON.stringify(item).includes("秘密桃子")) || window.office.bubbles.some((bubble) => bubble.text.includes("秘密桃子")));
+    assert(!leaked, "旁觀者不該收到悄悄話內容");
+    await momo.evaluate(() => window.office.setView({ dist: 860 }));
+    await momo.waitForTimeout(350);
+    await shot(momo, "whisper-participant");
+    await hana.evaluate(() => window.office.setView({ dist: 1100 }));
+    await hana.waitForTimeout(350);
+    await shot(hana, "whisper-outsider");
+    const joinSpot = await hana.evaluate(() => {
+      const partner = window.office.others.find((person) => person.id === "momo") || window.office.others.find((person) => person.id === "naco");
+      return { x: partner.x + 64, y: partner.y };
+    });
+    await march(hana, joinSpot.x, joinSpot.y);
+    await hana.waitForFunction(() => document.querySelector("#hint").textContent.includes("想加入"));
+    await hana.locator("#chat-input").blur();
+    await hana.keyboard.press("f");
+    await naco.waitForFunction(() => window.office.asks.some((ask) => ask.id === "hana"));
+    await momo.waitForFunction(() => window.office.asks.some((ask) => ask.id === "hana"));
+    await naco.getByRole("button", { name: "婉拒" }).click();
+    await naco.waitForFunction(() => !window.office.asks.some((ask) => ask.id === "hana"));
+    assert(!(await hana.evaluate(() => window.office.group.includes("hana"))), "婉拒不該把人加進悄悄話");
+    await momo.getByRole("button", { name: "答應" }).click();
+    await hana.waitForFunction(() => window.office.group.includes("hana") && window.office.group.length === 3);
+    await naco.waitForFunction(() => window.office.group.length === 3);
+    await naco.locator("#chat-input").fill("圈內第二句");
+    await naco.locator("#chat-input").press("Enter");
+    await hana.waitForFunction(() => window.office.bubbles.some((bubble) => bubble.whisper && bubble.text.includes("圈內第二句")));
+    const away = await hana.evaluate(() => {
+      const partner = window.office.others.find((person) => person.id === "momo");
+      const x = partner.x + 420 > 1180 ? partner.x - 420 : partner.x + 420;
+      return { x, y: partner.y };
+    });
+    await march(hana, away.x, away.y);
+    await hana.waitForFunction(() => !window.office.whisper);
+    await naco.waitForFunction(() => {
+      const group = window.office.group;
+      return group.includes("naco") && group.includes("momo") && !group.includes("hana") && group.length === 2;
+    });
+    const split = await momo.evaluate(() => {
+      const partner = window.office.others.find((person) => person.id === "naco");
+      const west = { x: 96, y: partner.y };
+      const east = { x: 480, y: partner.y };
+      const clear = (spot) => Math.hypot(spot.x - partner.x, spot.y - partner.y) > 220 && spot.x > 64 && spot.x < 520;
+      if (clear(west)) return west;
+      return east;
+    });
+    await march(momo, split.x, split.y);
+    await naco.waitForFunction(() => !window.office.whisper);
+    await momo.waitForFunction(() => !window.office.whisper);
+    await hana.close();
+    await hanaContext.close();
+    await naco.evaluate(({ yaw, dist }) => window.office.setView({ yaw, dist }), { yaw: isoYaw, dist: isoDist });
+    await momo.evaluate(({ yaw, dist }) => window.office.setView({ yaw, dist }), { yaw: isoYaw, dist: isoDist });
+
     await naco.evaluate(() => window.office.socket.close());
     await naco.waitForFunction(() => document.querySelector("#conn").textContent.includes("重新連線"));
     await naco.waitForFunction(() => document.querySelector("#conn").textContent.includes("已連線"), null, { timeout: 10000 });
@@ -401,19 +749,35 @@ async function main() {
     await naco.getByRole("button", { name: "調整設備擺設" }).click();
     await naco.waitForFunction(() => window.office.editing);
     await naco.getByRole("button", { name: "辦公區" }).click();
+    await naco.evaluate(() => {
+      const item = window.office.furniture.find((furn) => furn.id === "desk-1-monitor");
+      window.office.focusOn(item.x + 18, item.y + 12);
+    });
     await naco.waitForFunction(() => {
       const item = window.office.furniture.find((furn) => furn.id === "desk-1-monitor");
       const point = window.office.worldToScreen(item.x + 18, item.y + 12);
-      return point.x > 30 && point.x < 1360 && point.y > 150 && point.y < 800;
+      const dest = window.office.worldToScreen(item.x + 18 + 36, item.y + 12);
+      const bar = document.getElementById("editbar").getBoundingClientRect().bottom;
+      const onScreen = (spot) => spot.x > 40 && spot.x < 1380 && spot.y > bar + 8 && spot.y < 860;
+      const prev = window.__furnStable;
+      window.__furnStable = { x: point.x, y: point.y, dx: dest.x, dy: dest.y };
+      if (!prev) return false;
+      const still = Math.hypot(point.x - prev.x, point.y - prev.y) < 0.4
+        && Math.hypot(dest.x - prev.dx, dest.y - prev.dy) < 0.4;
+      return still && onScreen(point) && onScreen(dest);
     });
-    await naco.waitForTimeout(450);
     const origin = await naco.evaluate(() => {
       const item = window.office.furniture.find((furn) => furn.id === "desk-1-monitor");
-      return { x: item.x, y: item.y, point: window.office.worldToScreen(item.x + 18, item.y + 12) };
+      return {
+        x: item.x,
+        y: item.y,
+        point: window.office.worldToScreen(item.x + 18, item.y + 12),
+        dest: window.office.worldToScreen(item.x + 18 + 36, item.y + 12),
+      };
     });
     await naco.mouse.move(origin.point.x, origin.point.y);
     await naco.mouse.down();
-    await naco.mouse.move(origin.point.x + 72, origin.point.y + 36, { steps: 8 });
+    await naco.mouse.move(origin.dest.x, origin.dest.y, { steps: 8 });
     await naco.mouse.up();
     await momo.waitForFunction((start) => {
       const item = window.office.furniture.find((furn) => furn.id === "desk-1-monitor");
