@@ -3,19 +3,21 @@ import {
   catalog,
   checkId,
   checkPassword,
-  defaultAccessories,
+  avatarAnimal,
+  bodyRadiusOf,
   furnitureFits,
   furnitureSize,
-  isAnimal,
   isRestroom,
-  normalizeAccessories,
   normalizeChat,
+  normalizeLook,
   normalizeName,
   palette,
+  presetLook,
   publicMap,
+  readStoredLook,
   TILE,
-  type Accessories,
   type Furn,
+  type Look,
   type OfficeMap,
 } from "./content";
 
@@ -43,20 +45,38 @@ type Att = {
   id: string;
   name: string;
   animal: string;
-  accessories: Accessories;
+  look: Look;
   x: number;
   y: number;
   dir: number;
   editing: boolean;
+  seat: string | null;
+  whisper: string | null;
   lastMove: number;
   lastChat: number;
   lastPersist: number;
+};
+
+type ChairLive = {
+  id: string;
+  x: number;
+  y: number;
+  rot: number;
+  vx: number;
+  vy: number;
+  occupant: string | null;
+  lastNet: number;
+  lastSave: number;
 };
 
 type ByeReason = "removed" | "kicked" | "password" | "replaced";
 
 const OFFICE = buildOffice();
 const MAX_MEMBERS = 40;
+const WHISPER_NEAR = 112;
+const WHISPER_FAR = 176;
+const WHISPER_CAP = 6;
+const WHISPER_ASK_MS = 12000;
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -116,13 +136,15 @@ async function readJson(request: Request): Promise<Record<string, unknown> | nul
   }
 }
 
-function readAccessories(raw: string | null): Accessories {
-  if (!raw) return defaultAccessories();
-  try {
-    return normalizeAccessories(JSON.parse(raw)) ?? defaultAccessories();
-  } catch {
-    return defaultAccessories();
+function incomingLook(body: Record<string, unknown>, animal: string | null): Look | null {
+  if (body.look !== undefined) return normalizeLook(body.look);
+  if (typeof body.animal === "string") {
+    const preset = presetLook(body.animal);
+    if (!preset) return null;
+    return preset;
   }
+  if (animal) return readStoredLook(animal, null);
+  return null;
 }
 
 const SCORE_GAMES: Record<string, { title: string; unit: string; mode: "max" | "inc"; max: number }> = {
@@ -138,6 +160,11 @@ const SCORE_GAMES: Record<string, { title: string; unit: string; mode: "max" | "
 export class OfficeRoom implements DurableObject {
   private readonly map: OfficeMap = OFFICE;
   private readonly scoreHits = new Map<string, number[]>();
+  private readonly chairs = new Map<string, ChairLive>();
+  private readonly bumpAt = new Map<string, number>();
+  private readonly whisperAsks = new Map<string, { group: string; until: number }>();
+  private whisperSeq = 1;
+  private chairsReady = false;
 
   constructor(
     private readonly ctx: DurableObjectState,
@@ -196,9 +223,14 @@ export class OfficeRoom implements DurableObject {
     const kind = body.t;
     if (kind === "move") this.onMove(ws, att, body);
     else if (kind === "chat") this.onChat(ws, att, body);
+    else if (kind === "hush") this.onHush(ws, att, body);
     else if (kind === "profile") this.onProfile(ws, att, body);
     else if (kind === "edit") this.onEdit(ws, att, body);
     else if (kind === "furn") this.onFurniture(ws, att, body);
+    else if (kind === "bump") this.onBump(ws, att, body);
+    else if (kind === "sit") this.onSit(ws, att, body);
+    else if (kind === "rise") this.onRise(ws, att);
+    else if (kind === "glide") this.onGlide(ws, att, body);
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
@@ -206,8 +238,11 @@ export class OfficeRoom implements DurableObject {
     if (!att) return;
     const still = this.ctx.getWebSockets(att.id).some((other) => other !== ws);
     if (still) return;
+    this.releaseSeat(att.id);
+    this.dropWhisper(att, ws);
     this.persist(att);
     this.broadcast({ t: "leave", id: att.id });
+    if (this.ctx.getWebSockets().every((socket) => socket === ws)) this.resetChairs(true);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
@@ -369,16 +404,15 @@ export class OfficeRoom implements DurableObject {
       if (!name) return json({ error: "顯示名稱不可空白" }, 400);
       this.sql.exec(`UPDATE members SET display_name = ? WHERE id = ?`, name, member.id);
     }
-    if (body.animal !== undefined || body.accessories !== undefined) {
+    if (body.animal !== undefined || body.look !== undefined) {
       if (member.animal) return json({ error: "請到男廁或女廁更換造型" }, 403);
-      const animal = body.animal;
-      if (!isAnimal(animal)) return json({ error: "請選擇一種動物" }, 400);
-      const accessories = normalizeAccessories(body.accessories, defaultAccessories());
-      if (!accessories) return json({ error: "配件不正確" }, 400);
+      const look = incomingLook(body, null);
+      if (!look) return json({ error: "造型不正確" }, 400);
+      const animal = avatarAnimal(body.animal, look);
       this.sql.exec(
         `UPDATE members SET animal = ?, accessories = ? WHERE id = ?`,
         animal,
-        JSON.stringify(accessories),
+        JSON.stringify(look),
         member.id,
       );
     }
@@ -392,21 +426,28 @@ export class OfficeRoom implements DurableObject {
     }
     const member = this.memberByToken(url.searchParams.get("token") || "");
     if (!member) return json({ error: "登入已失效" }, 401);
-    if (!member.animal) return json({ error: "請先選擇動物造型" }, 403);
+    if (!member.animal) return json({ error: "請先選擇造型" }, 403);
     for (const old of this.ctx.getWebSockets(member.id)) this.goodbye(old, "replaced");
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    const accessories = readAccessories(member.accessories);
+    const look = readStoredLook(member.animal, member.accessories);
+    if (!look) return json({ error: "請先選擇造型" }, 403);
+    const spot = this.separateFrom(member.id, member.pos_x, member.pos_y, look);
+    if (spot.x !== member.pos_x || spot.y !== member.pos_y) {
+      this.sql.exec(`UPDATE members SET pos_x = ?, pos_y = ? WHERE id = ?`, spot.x, spot.y, member.id);
+    }
     const att: Att = {
       id: member.id,
       name: member.display_name,
       animal: member.animal,
-      accessories,
-      x: member.pos_x,
-      y: member.pos_y,
+      look,
+      x: spot.x,
+      y: spot.y,
       dir: member.pos_dir === -1 ? -1 : 1,
       editing: false,
+      seat: null,
+      whisper: null,
       lastMove: 0,
       lastChat: 0,
       lastPersist: Date.now(),
@@ -428,6 +469,7 @@ export class OfficeRoom implements DurableObject {
       map: publicMap(this.map),
       palette: palette(),
       catalog: catalog(),
+      hush: this.activeHush(),
     });
     this.broadcast({ t: "join", player: this.player(att) }, server);
     return new Response(null, { status: 101, webSocket: client });
@@ -598,6 +640,7 @@ export class OfficeRoom implements DurableObject {
   }
 
   private onMove(ws: WebSocket, att: Att, body: Record<string, unknown>) {
+    if (att.seat) return;
     const x = body.x;
     const y = body.y;
     if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -616,6 +659,7 @@ export class OfficeRoom implements DurableObject {
       this.send(ws, { t: "edit", on: false });
     }
     ws.serializeAttachment(att);
+    this.keepWhisper(ws, att);
     this.broadcast({ t: "move", id: att.id, x, y, dir }, ws);
     if (now - att.lastPersist > 4000) {
       this.persist(att);
@@ -634,7 +678,56 @@ export class OfficeRoom implements DurableObject {
     }
     att.lastChat = now;
     ws.serializeAttachment(att);
+    if (att.whisper || body.whisper === true) {
+      const members = att.whisper ? this.membersOf(att.whisper).filter((member) => member.att.id !== att.id) : [];
+      const close = members.some((member) => Math.hypot(att.x - member.att.x, att.y - member.att.y) <= WHISPER_FAR);
+      if (!att.whisper || !members.length || !close) {
+        if (att.whisper) this.leaveWhisper(att, ws);
+        this.send(ws, { t: "error", message: "悄悄話已經結束了" });
+        return;
+      }
+      const payload = { t: "chat", id: att.id, text, whisper: true, at: now };
+      this.send(ws, payload);
+      for (const member of members) this.send(member.ws, payload);
+      return;
+    }
     this.broadcast({ t: "chat", id: att.id, text, at: now });
+  }
+
+  private onHush(ws: WebSocket, att: Att, body: Record<string, unknown>) {
+    if (body.off) {
+      this.leaveWhisper(att, ws);
+      return;
+    }
+    if (typeof body.ask === "string") {
+      this.acceptWhisper(ws, att, body.ask);
+      return;
+    }
+    const id = typeof body.id === "string" ? body.id : "";
+    if (!id || id === att.id) return;
+    if (att.whisper) {
+      this.send(ws, { t: "error", message: "先離開現在的悄悄話" });
+      return;
+    }
+    const other = this.socketOf(id);
+    if (!other) {
+      this.send(ws, { t: "error", message: "對方不在辦公室" });
+      return;
+    }
+    if (Math.hypot(att.x - other.att.x, att.y - other.att.y) > WHISPER_NEAR) {
+      this.send(ws, { t: "error", message: "再靠近一點才能說悄悄話" });
+      return;
+    }
+    if (other.att.whisper) {
+      this.requestWhisper(ws, att, other.att.whisper);
+      return;
+    }
+    const group = `g${this.whisperSeq++}`;
+    att.whisper = group;
+    other.att.whisper = group;
+    ws.serializeAttachment(att);
+    other.ws.serializeAttachment(other.att);
+    this.broadcast({ t: "hush", group, members: [att.id, other.att.id], by: att.id });
   }
 
   private onProfile(ws: WebSocket, att: Att, body: Record<string, unknown>) {
@@ -648,45 +741,37 @@ export class OfficeRoom implements DurableObject {
       name = next;
     }
     let animal = att.animal;
-    let accessories = att.accessories;
-    if (body.animal !== undefined || body.accessories !== undefined) {
+    let look = att.look;
+    if (body.animal !== undefined || body.look !== undefined) {
       if (!isRestroom(att.x, att.y, this.map.zones)) {
         this.send(ws, { t: "error", message: "請到男廁或女廁更換造型" });
         return;
       }
-      if (body.animal !== undefined) {
-        if (!isAnimal(body.animal)) {
-          this.send(ws, { t: "error", message: "請選擇一種動物" });
-          return;
-        }
-        animal = body.animal;
+      const next = incomingLook(body, att.animal);
+      if (!next) {
+        this.send(ws, { t: "error", message: "造型不正確" });
+        return;
       }
-      if (body.accessories !== undefined) {
-        const next = normalizeAccessories(body.accessories, accessories);
-        if (!next) {
-          this.send(ws, { t: "error", message: "配件不正確" });
-          return;
-        }
-        accessories = next;
-      }
+      look = next;
+      animal = avatarAnimal(body.animal, look);
     }
     this.sql.exec(
       `UPDATE members SET display_name = ?, animal = ?, accessories = ? WHERE id = ?`,
       name,
       animal,
-      JSON.stringify(accessories),
+      JSON.stringify(look),
       att.id,
     );
     att.name = name;
     att.animal = animal;
-    att.accessories = accessories;
+    att.look = look;
     ws.serializeAttachment(att);
     this.broadcast({
       t: "profile",
       id: att.id,
       displayName: name,
       animal,
-      accessories,
+      look,
     });
   }
 
@@ -740,7 +825,19 @@ export class OfficeRoom implements DurableObject {
         this.send(ws, { t: "error", message: "那裡是牆壁，放不進去", furniture: this.furniture() });
         return;
       }
+      const seated = this.chairLive(id);
+      if (seated?.occupant) {
+        this.send(ws, { t: "error", message: "有人坐在這張椅子上", furniture: this.furniture() });
+        return;
+      }
       this.sql.exec(`UPDATE furniture SET x = ?, y = ?, rot = ? WHERE id = ?`, x, y, rot, id);
+      if (seated) {
+        seated.x = x;
+        seated.y = y;
+        seated.rot = rot;
+        seated.vx = 0;
+        seated.vy = 0;
+      }
     } else if (op === "add") {
       const kind = typeof body.kind === "string" ? body.kind : "";
       if (!furnitureSize(kind, 0)) {
@@ -761,9 +858,18 @@ export class OfficeRoom implements DurableObject {
       }
       const id = `item-${randomToken(6)}`;
       this.sql.exec(`INSERT INTO furniture (id, kind, x, y, rot) VALUES (?, ?, ?, ?, 0)`, id, kind, x, y);
+      if (kind === "chair") this.rememberChair({ id, x, y, rot: 0 });
     } else if (op === "remove") {
       const id = typeof body.id === "string" ? body.id : "";
+      const seated = this.chairLive(id);
+      if (seated?.occupant) {
+        this.send(ws, { t: "error", message: "有人坐在這張椅子上", furniture: this.furniture() });
+        return;
+      }
       this.sql.exec(`DELETE FROM furniture WHERE id = ?`, id);
+      this.chairs.delete(id);
+    } else if (op === "home") {
+      this.resetChairs(false);
     } else {
       return;
     }
@@ -781,13 +887,272 @@ export class OfficeRoom implements DurableObject {
     return this.map.walls[ty][tx] === "1";
   }
 
+  private onBump(ws: WebSocket, att: Att, body: Record<string, unknown>) {
+    const otherId = typeof body.other === "string" ? body.other : "";
+    const nx = typeof body.nx === "number" ? body.nx : 0;
+    const ny = typeof body.ny === "number" ? body.ny : 0;
+    if (!otherId || !Number.isFinite(nx) || !Number.isFinite(ny)) return;
+    let ox = this.map.kiki.x;
+    let oy = this.map.kiki.y;
+    let otherRadius = bodyRadiusOf({ body: "bean" });
+    if (otherId !== "kiki") {
+      const other = this.attachment(otherId);
+      if (!other) return;
+      ox = other.x;
+      oy = other.y;
+      otherRadius = bodyRadiusOf(other.look);
+    }
+    const reach = bodyRadiusOf(att.look) + otherRadius + 28;
+    if (Math.hypot(att.x - ox, att.y - oy) > reach) return;
+    const key = [att.id, otherId].sort().join(":");
+    const now = Date.now();
+    if (now - (this.bumpAt.get(key) || 0) < 420) return;
+    this.bumpAt.set(key, now);
+    this.broadcast({ t: "bump", id: att.id, other: otherId, nx, ny }, ws);
+  }
+
+  private onSit(ws: WebSocket, att: Att, body: Record<string, unknown>) {
+    if (att.seat || att.editing) return;
+    const id = typeof body.id === "string" ? body.id : "";
+    const chair = this.chairLive(id);
+    if (!chair || chair.occupant) {
+      this.send(ws, { t: "error", message: "這張椅子有人坐了" });
+      return;
+    }
+    const center = this.chairCenter(chair);
+    if (Math.hypot(att.x - center.x, att.y - center.y) > 78) {
+      this.send(ws, { t: "error", message: "再靠近一點才能坐下" });
+      return;
+    }
+    chair.occupant = att.id;
+    chair.vx = 0;
+    chair.vy = 0;
+    att.seat = chair.id;
+    att.x = center.x;
+    att.y = center.y;
+    ws.serializeAttachment(att);
+    this.keepWhisper(ws, att);
+    this.broadcast({
+      t: "sit",
+      id: att.id,
+      chair: chair.id,
+      x: chair.x,
+      y: chair.y,
+      rot: chair.rot,
+      cx: center.x,
+      cy: center.y,
+    });
+  }
+
+  private onRise(ws: WebSocket, att: Att) {
+    if (!att.seat) return;
+    const chair = this.chairLive(att.seat);
+    if (chair && chair.occupant === att.id) {
+      chair.occupant = null;
+      chair.vx = 0;
+      chair.vy = 0;
+      this.sql.exec(`UPDATE furniture SET x = ?, y = ?, rot = ? WHERE id = ?`, chair.x, chair.y, chair.rot, chair.id);
+      chair.lastSave = Date.now();
+      const spot = this.freeBeside(chair, att);
+      att.x = spot.x;
+      att.y = spot.y;
+    }
+    const chairId = att.seat;
+    att.seat = null;
+    ws.serializeAttachment(att);
+    this.keepWhisper(ws, att);
+    this.persist(att);
+    this.broadcast({ t: "rise", id: att.id, chair: chairId, x: att.x, y: att.y });
+  }
+
+  private onGlide(ws: WebSocket, att: Att, body: Record<string, unknown>) {
+    const id = typeof body.id === "string" ? body.id : att.seat || "";
+    const chair = this.chairLive(id);
+    if (!chair || chair.occupant !== att.id) return;
+    const x = body.x;
+    const y = body.y;
+    const rot = body.rot;
+    const vx = body.vx;
+    const vy = body.vy;
+    if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    const size = furnitureSize("chair", typeof rot === "number" ? rot : chair.rot);
+    if (!size) return;
+    const cx = x + size.w / 2;
+    const cy = y + size.h / 2;
+    if (this.inWall(cx, cy) || !furnitureFits(this.map.walls, "chair", x, y, 0)) {
+      this.send(ws, this.glideState(att.id, chair, true));
+      return;
+    }
+    const now = Date.now();
+    const dt = Math.min(0.45, Math.max(0.03, chair.lastNet ? (now - chair.lastNet) / 1000 : 0.08));
+    if (Math.hypot(x - chair.x, y - chair.y) > 280 * dt + 36) {
+      this.send(ws, this.glideState(att.id, chair, true));
+      return;
+    }
+    chair.x = x;
+    chair.y = y;
+    if (typeof rot === "number" && Number.isFinite(rot)) chair.rot = rot;
+    chair.vx = typeof vx === "number" && Number.isFinite(vx) ? vx : 0;
+    chair.vy = typeof vy === "number" && Number.isFinite(vy) ? vy : 0;
+    chair.lastNet = now;
+    att.x = cx;
+    att.y = cy;
+    ws.serializeAttachment(att);
+    this.keepWhisper(ws, att);
+    if (now - chair.lastSave > 450) {
+      this.sql.exec(`UPDATE furniture SET x = ?, y = ?, rot = ? WHERE id = ?`, chair.x, chair.y, chair.rot, chair.id);
+      chair.lastSave = now;
+      this.persist(att);
+    }
+    this.broadcast(this.glideState(att.id, chair, false), ws);
+  }
+
+  private glideState(id: string, chair: ChairLive, snap: boolean) {
+    const center = this.chairCenter(chair);
+    return {
+      t: "glide",
+      id,
+      chair: chair.id,
+      x: chair.x,
+      y: chair.y,
+      rot: chair.rot,
+      vx: snap ? 0 : chair.vx,
+      vy: snap ? 0 : chair.vy,
+      cx: center.x,
+      cy: center.y,
+      snap,
+    };
+  }
+
+  private ensureChairs() {
+    if (this.chairsReady) return;
+    this.chairsReady = true;
+    for (const row of this.sql.exec<Furn>(`SELECT id, kind, x, y, rot FROM furniture`).toArray()) {
+      if (row.kind !== "chair") continue;
+      this.rememberChair({ id: String(row.id), x: Number(row.x), y: Number(row.y), rot: Number(row.rot) || 0 });
+    }
+  }
+
+  private rememberChair(row: { id: string; x: number; y: number; rot: number }) {
+    const prev = this.chairs.get(row.id);
+    this.chairs.set(row.id, {
+      id: row.id,
+      x: row.x,
+      y: row.y,
+      rot: row.rot,
+      vx: 0,
+      vy: 0,
+      occupant: prev?.occupant ?? null,
+      lastNet: prev?.lastNet ?? 0,
+      lastSave: prev?.lastSave ?? 0,
+    });
+  }
+
+  private chairLive(id: string): ChairLive | null {
+    this.ensureChairs();
+    return this.chairs.get(id) ?? null;
+  }
+
+  private chairCenter(chair: ChairLive): { x: number; y: number } {
+    return { x: chair.x + 16, y: chair.y + 13 };
+  }
+
+  private attachment(id: string): Att | null {
+    for (const ws of this.ctx.getWebSockets(id)) {
+      const att = ws.deserializeAttachment() as Att | null;
+      if (att) return att;
+    }
+    return null;
+  }
+
+  private releaseSeat(id: string) {
+    this.ensureChairs();
+    for (const chair of this.chairs.values()) {
+      if (chair.occupant === id) {
+        chair.occupant = null;
+        chair.vx = 0;
+        chair.vy = 0;
+      }
+    }
+  }
+
+  private resetChairs(force: boolean) {
+    this.ensureChairs();
+    for (const item of this.map.furniture) {
+      if (item.kind !== "chair") continue;
+      const live = this.chairs.get(item.id);
+      if (live?.occupant && !force) continue;
+      this.sql.exec(`UPDATE furniture SET x = ?, y = ?, rot = ? WHERE id = ?`, item.x, item.y, item.rot, item.id);
+      this.chairs.set(item.id, {
+        id: item.id,
+        x: item.x,
+        y: item.y,
+        rot: item.rot,
+        vx: 0,
+        vy: 0,
+        occupant: force ? null : (live?.occupant ?? null),
+        lastNet: 0,
+        lastSave: Date.now(),
+      });
+    }
+  }
+
+  private freeBeside(chair: ChairLive, att: Att): { x: number; y: number } {
+    const center = this.chairCenter(chair);
+    const radius = bodyRadiusOf(att.look);
+    for (let ring = 1; ring <= 6; ring++) {
+      const step = 22 + ring * 16;
+      for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2;
+        const x = center.x + Math.cos(angle) * step;
+        const y = center.y + Math.sin(angle) * step;
+        if (this.separateFrom(att.id, x, y, att.look).x === x && this.separateFrom(att.id, x, y, att.look).y === y && !this.inWall(x, y)) {
+          if (Math.hypot(x - center.x, y - center.y) >= radius * 0.45) return { x, y };
+        }
+      }
+    }
+    return { x: center.x + 48, y: center.y + 36 };
+  }
+
   private spawnFor(id: string): { x: number; y: number } {
     let hash = 0;
     for (const char of id) hash = (hash * 33 + char.charCodeAt(0)) >>> 0;
-    return {
-      x: this.map.spawn.x + (hash % 5) * 16 - 32,
-      y: this.map.spawn.y + ((hash >> 3) % 3) * 12 - 12,
-    };
+    const col = (hash % 7) - 3;
+    const x = this.map.spawn.x + col * 72;
+    const y = this.map.spawn.y;
+    if (this.inWall(x, y)) return { x: this.map.spawn.x, y: this.map.spawn.y };
+    return { x, y };
+  }
+
+  private separateFrom(id: string, x: number, y: number, look: Look | null): { x: number; y: number } {
+    const mine = bodyRadiusOf(look);
+    const occupied: Array<{ x: number; y: number; r: number }> = [
+      { x: this.map.kiki.x, y: this.map.kiki.y, r: bodyRadiusOf({ body: "bean" }) },
+    ];
+    for (const ws of this.ctx.getWebSockets()) {
+      const other = ws.deserializeAttachment() as Att | null;
+      if (!other || other.id === id) continue;
+      occupied.push({ x: other.x, y: other.y, r: bodyRadiusOf(other.look) });
+    }
+    this.ensureChairs();
+    for (const chair of this.chairs.values()) {
+      if (chair.occupant === id) continue;
+      const center = this.chairCenter(chair);
+      occupied.push({ x: center.x, y: center.y, r: 18 });
+    }
+    const clear = (px: number, py: number) =>
+      !this.inWall(px, py) && occupied.every((person) => Math.hypot(person.x - px, person.y - py) >= mine + person.r - 1);
+    if (clear(x, y)) return { x, y };
+    const base = this.spawnFor(id);
+    for (let ring = 0; ring <= 5; ring++) {
+      for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2 + ring;
+        const px = base.x + Math.cos(angle) * (36 + ring * 28);
+        const py = base.y + Math.sin(angle) * (28 + ring * 22);
+        if (clear(px, py)) return { x: px, y: py };
+      }
+    }
+    return { x: base.x, y: base.y };
   }
 
   private issueSession(id: string): string {
@@ -830,7 +1195,7 @@ export class OfficeRoom implements DurableObject {
       id: member.id,
       displayName: member.display_name,
       animal: member.animal,
-      accessories: readAccessories(member.accessories),
+      look: readStoredLook(member.animal, member.accessories),
     };
   }
 
@@ -839,21 +1204,28 @@ export class OfficeRoom implements DurableObject {
       id: att.id,
       displayName: att.name,
       animal: att.animal,
-      accessories: att.accessories,
+      look: att.look,
+      seat: att.seat,
       x: att.x,
       y: att.y,
       dir: att.dir,
     };
   }
 
-  private furniture(): Furn[] {
-    return this.sql.exec<Furn>(`SELECT id, kind, x, y, rot FROM furniture`).toArray().map((row) => ({
-      id: String(row.id),
-      kind: String(row.kind),
-      x: Number(row.x),
-      y: Number(row.y),
-      rot: Number(row.rot) || 0,
-    }));
+  private furniture(): Array<Furn & { seat: string | null }> {
+    this.ensureChairs();
+    return this.sql.exec<Furn>(`SELECT id, kind, x, y, rot FROM furniture`).toArray().map((row) => {
+      const id = String(row.id);
+      const chair = row.kind === "chair" ? this.chairs.get(id) : null;
+      return {
+        id,
+        kind: String(row.kind),
+        x: chair ? chair.x : Number(row.x),
+        y: chair ? chair.y : Number(row.y),
+        rot: chair ? chair.rot : Number(row.rot) || 0,
+        seat: chair?.occupant ?? null,
+      };
+    });
   }
 
   private goodbye(ws: WebSocket, reason: ByeReason) {
@@ -868,6 +1240,111 @@ export class OfficeRoom implements DurableObject {
     } catch {
       /* ignore */
     }
+  }
+
+  private socketOf(id: string): { ws: WebSocket; att: Att } | null {
+    for (const ws of this.ctx.getWebSockets(id)) {
+      const att = ws.deserializeAttachment() as Att | null;
+      if (att) return { ws, att };
+    }
+    return null;
+  }
+
+  private activeHush(): Array<{ group: string; members: string[] }> {
+    const groups = new Map<string, string[]>();
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() as Att | null;
+      if (!att?.whisper) continue;
+      const list = groups.get(att.whisper) || [];
+      list.push(att.id);
+      groups.set(att.whisper, list);
+    }
+    return [...groups.entries()]
+      .filter(([, members]) => members.length >= 2)
+      .map(([group, members]) => ({ group, members }));
+  }
+
+  private membersOf(group: string): Array<{ ws: WebSocket; att: Att }> {
+    const list: Array<{ ws: WebSocket; att: Att }> = [];
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() as Att | null;
+      if (att?.whisper === group) list.push({ ws, att });
+    }
+    return list;
+  }
+
+  private requestWhisper(ws: WebSocket, att: Att, group: string) {
+    const members = this.membersOf(group);
+    if (members.length >= WHISPER_CAP) {
+      this.send(ws, { t: "error", message: "這一圈悄悄話已經滿了" });
+      return;
+    }
+    const until = Date.now() + WHISPER_ASK_MS;
+    this.whisperAsks.set(att.id, { group, until });
+    const ask = { t: "ask", id: att.id, group, until };
+    for (const member of members) this.send(member.ws, ask);
+    this.send(ws, { ...ask, pending: true });
+  }
+
+  private acceptWhisper(ws: WebSocket, att: Att, requesterId: string) {
+    const ask = this.whisperAsks.get(requesterId);
+    if (!ask || ask.until < Date.now()) {
+      this.whisperAsks.delete(requesterId);
+      this.send(ws, { t: "error", message: "加入請求已經過期" });
+      return;
+    }
+    if (att.whisper !== ask.group) return;
+    const members = this.membersOf(ask.group);
+    if (members.length >= WHISPER_CAP) {
+      this.send(ws, { t: "error", message: "這一圈悄悄話已經滿了" });
+      return;
+    }
+    const requester = this.socketOf(requesterId);
+    if (!requester || requester.att.whisper) {
+      this.whisperAsks.delete(requesterId);
+      this.send(ws, { t: "error", message: "對方現在不能加入" });
+      return;
+    }
+    const close = members.some((member) => Math.hypot(requester.att.x - member.att.x, requester.att.y - member.att.y) <= WHISPER_NEAR);
+    if (!close) {
+      this.send(ws, { t: "error", message: "對方走遠了" });
+      return;
+    }
+    requester.att.whisper = ask.group;
+    requester.ws.serializeAttachment(requester.att);
+    this.whisperAsks.delete(requesterId);
+    const next = this.membersOf(ask.group);
+    this.broadcast({ t: "hush", group: ask.group, members: next.map((member) => member.att.id), by: requesterId });
+    for (const member of next) this.send(member.ws, { t: "ask", id: requesterId, off: true });
+  }
+
+  private leaveWhisper(att: Att, ws: WebSocket | null) {
+    const group = att.whisper;
+    if (!group) return;
+    att.whisper = null;
+    if (ws) ws.serializeAttachment(att);
+    this.whisperAsks.delete(att.id);
+    const rest = this.membersOf(group);
+    if (rest.length < 2) {
+      for (const member of rest) {
+        member.att.whisper = null;
+        member.ws.serializeAttachment(member.att);
+      }
+      this.broadcast({ t: "hush", group, members: [] });
+      return;
+    }
+    this.broadcast({ t: "hush", group, members: rest.map((member) => member.att.id) });
+  }
+
+  private dropWhisper(att: Att, ws: WebSocket) {
+    this.leaveWhisper(att, ws);
+  }
+
+  private keepWhisper(ws: WebSocket, att: Att) {
+    if (!att.whisper) return;
+    const others = this.membersOf(att.whisper).filter((member) => member.att.id !== att.id);
+    const close = others.some((member) => Math.hypot(att.x - member.att.x, att.y - member.att.y) <= WHISPER_FAR);
+    if (!others.length || !close) this.leaveWhisper(att, ws);
   }
 
   private broadcast(data: unknown, except?: WebSocket) {

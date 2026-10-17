@@ -1,13 +1,20 @@
-import { FONT, drawAnimal, drawFurniture, drawKiki, drawProp } from "./sprites.js";
+import { createWorld } from "./world3d.js";
 
 const SESSION = "office_session";
 const DEVICE = "office_device";
 const TILE = 32;
 const SPEED = 170;
+const WHISPER_NEAR = 112;
+const WHISPER_FAR = 176;
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("view");
-const ctx = canvas.getContext("2d");
+const world = createWorld({
+  view: canvas,
+  preview: $("preview"),
+  labels: $("labels"),
+  fallback: $("webgl-fallback"),
+});
 
 const state = {
   map: null,
@@ -31,7 +38,22 @@ const state = {
   password: "",
   avatarMode: "first",
   avatarAnimal: "cat",
-  avatarAcc: { hat: "none", glasses: "none", extra: "none" },
+  look: null,
+  lookTab: "preset",
+  colorKey: "body",
+  seat: null,
+  rising: false,
+  whisper: null,
+  groups: new Map(),
+  memberGroup: new Map(),
+  asks: [],
+  whisperArm: false,
+  whisperNote: "",
+  whisperNoteUntil: 0,
+  tape: [],
+  ride: { vx: 0, vy: 0 },
+  rideWish: null,
+  bumpAt: new Map(),
   backoff: 700,
   sentX: 0,
   sentY: 0,
@@ -48,6 +70,7 @@ const state = {
   cam: { x: 0, y: 0 },
   anim: 0,
   loop: false,
+  orbit: null,
 };
 
 let wsGen = 0;
@@ -102,6 +125,125 @@ function setHint(text) {
   $("hint").hidden = !state.hint;
 }
 
+function personNamed(id) {
+  if (state.me?.id === id) return state.me;
+  return state.others.get(id) || null;
+}
+
+function applyGroup(group, members, by) {
+  if (!group) return;
+  const was = state.whisper;
+  for (const [id, current] of state.memberGroup) {
+    if (current === group) state.memberGroup.delete(id);
+  }
+  const list = Array.isArray(members) ? members.filter(Boolean) : [];
+  if (list.length >= 2) {
+    state.groups.set(group, list);
+    for (const id of list) state.memberGroup.set(id, group);
+  } else {
+    state.groups.delete(group);
+    state.asks = state.asks.filter((ask) => ask.group !== group);
+  }
+  state.whisper = state.me ? (state.memberGroup.get(state.me.id) || null) : null;
+  state.whisperArm = false;
+  if (!was && state.whisper && by && by !== state.me?.id) {
+    const other = personNamed(by);
+    state.whisperNote = `${other?.displayName || by} @${by} 對你說悄悄話`;
+    state.whisperNoteUntil = performance.now() + 3200;
+  }
+  if (was && !state.whisper) state.whisperNoteUntil = 0;
+  if (by) state.asks = state.asks.filter((ask) => ask.id !== by);
+  paintWhisper();
+  paintAsks();
+}
+
+function forgetMember(id) {
+  const group = state.memberGroup.get(id);
+  if (!group) return;
+  state.memberGroup.delete(id);
+  const rest = (state.groups.get(group) || []).filter((member) => member !== id);
+  applyGroup(group, rest.length >= 2 ? rest : []);
+}
+
+function paintWhisper() {
+  const node = $("chat-whisper");
+  const label = $("chat-whisper-label");
+  const list = $("chat-whisper-list");
+  const input = $("chat-input");
+  if (!node || !label || !list) return;
+  if (!state.whisper) {
+    node.hidden = true;
+    label.textContent = "";
+    list.replaceChildren();
+    if (input) input.placeholder = "說點什麼…（Enter 送出）";
+    return;
+  }
+  const members = state.groups.get(state.whisper) || [];
+  node.hidden = false;
+  label.textContent = `悄悄話（${members.length} 人）`;
+  list.replaceChildren();
+  for (const id of members) {
+    const person = personNamed(id);
+    const item = document.createElement("span");
+    item.textContent = `${person?.displayName || id} @${id}`;
+    list.appendChild(item);
+  }
+  if (input) input.placeholder = "這句只有這一圈人看得到";
+}
+
+function paintAsks() {
+  const host = $("whisper-asks");
+  if (!host) return;
+  host.replaceChildren();
+  const now = Date.now();
+  state.asks = state.asks.filter((ask) => ask.until > now && ask.group === state.whisper);
+  for (const ask of state.asks) {
+    const row = document.createElement("div");
+    row.className = "whisper-ask";
+    const text = document.createElement("span");
+    text.textContent = `@${ask.id} 想加入悄悄話`;
+    const yes = document.createElement("button");
+    yes.type = "button";
+    yes.textContent = "答應";
+    yes.addEventListener("click", () => send({ t: "hush", ask: ask.id, yes: true }));
+    const no = document.createElement("button");
+    no.type = "button";
+    no.textContent = "婉拒";
+    no.addEventListener("click", () => {
+      state.asks = state.asks.filter((item) => item.id !== ask.id);
+      paintAsks();
+    });
+    row.append(text, yes, no);
+    host.appendChild(row);
+  }
+  host.hidden = host.childElementCount === 0;
+}
+
+function nearestWhisper() {
+  if (!state.me || state.whisper) return null;
+  let best = null;
+  for (const other of state.others.values()) {
+    const dist = Math.hypot(state.me.x - other.x, state.me.y - other.y);
+    if (dist <= WHISPER_NEAR && (!best || dist < best.dist)) {
+      best = { id: other.id, dist, grouped: Boolean(state.memberGroup.get(other.id)) };
+    }
+  }
+  return best;
+}
+
+function toggleWhisper() {
+  if (!state.me || state.gate || state.help || state.arcade || state.boardOpen || !$("avatar").hidden) return;
+  if (state.whisper) {
+    if (state.whisperArm) return;
+    state.whisperArm = true;
+    send({ t: "hush", off: true });
+    return;
+  }
+  const near = nearestWhisper();
+  if (!near) return;
+  send({ t: "hush", id: near.id });
+}
+
 function showGate(message) {
   wsGen += 1;
   state.gate = true;
@@ -137,90 +279,236 @@ function profileNow() {
   return state.me || state.profile;
 }
 
+const LOOK_TABS = [
+  ["preset", "預設"],
+  ["body", "體型"],
+  ["ears", "耳朵"],
+  ["tail", "尾巴"],
+  ["colors", "顏色"],
+  ["face", "臉"],
+  ["gear", "配件"],
+];
+
+function cloneLook(look) {
+  if (!look || typeof look !== "object") return null;
+  return { ...look, v: 2, colors: { ...(look.colors || {}) } };
+}
+
+function presetOf(id) {
+  return (state.catalog?.animals || []).find((item) => item.id === id) || null;
+}
+
 function showAvatar(mode) {
   state.avatarMode = mode;
   state.gate = mode === "first";
   const profile = profileNow();
   state.avatarAnimal = profile?.animal || state.catalog?.animals?.[0]?.id || "cat";
-  state.avatarAcc = { hat: "none", glasses: "none", extra: "none", ...(profile?.accessories || {}) };
+  state.look = cloneLook(profile?.look) || cloneLook(presetOf(state.avatarAnimal)?.look) || cloneLook(presetOf("cat")?.look);
+  state.lookTab = "preset";
   $("avatar-name").value = profile?.displayName || "";
-  $("avatar-title").textContent = mode === "mirror" ? "廁所鏡子" : "打造你的小動物";
+  $("avatar-title").textContent = mode === "mirror" ? "廁所鏡子" : "打造你的造型";
   $("avatar-note").textContent = mode === "mirror"
-    ? "只有在男廁或女廁可以換造型。名稱也可以一起改。"
+    ? "只有在男廁或女廁可以調整造型。名稱也可以一起改。"
     : `大家會看到這個造型。名稱下面會標 @${profile?.id || "id"}。`;
   $("avatar-save").textContent = mode === "mirror" ? "換上這個造型" : "進入辦公室";
   $("avatar-cancel").hidden = mode !== "mirror";
   $("avatar-error").textContent = "";
   $("gate").hidden = true;
   $("avatar").hidden = false;
-  buildAvatarChoices();
+  buildLookEditor();
+  world.resize();
   paintPreview();
 }
 
-function buildAvatarChoices() {
-  const animals = $("animal-grid");
-  const accessories = $("acc-grid");
-  animals.replaceChildren();
-  accessories.replaceChildren();
-  const catalog = state.catalog || { animals: [], accessories: {} };
-  for (const animal of catalog.animals || []) {
+function buildLookEditor() {
+  const tabs = $("look-tabs");
+  const panel = $("look-panel");
+  tabs.replaceChildren();
+  panel.replaceChildren();
+  for (const [id, label] of LOOK_TABS) {
     const button = document.createElement("button");
     button.type = "button";
-    button.dataset.animal = animal.id;
-    button.textContent = animal.label;
-    button.setAttribute("aria-pressed", String(state.avatarAnimal === animal.id));
+    button.textContent = label;
+    button.setAttribute("aria-pressed", String(state.lookTab === id));
     button.addEventListener("click", () => {
-      state.avatarAnimal = animal.id;
-      buildAvatarChoices();
-      paintPreview();
+      state.lookTab = id;
+      buildLookEditor();
     });
-    animals.appendChild(button);
+    tabs.appendChild(button);
   }
-  const groups = [
-    ["hat", "帽子"],
-    ["glasses", "眼鏡"],
-    ["extra", "配飾"],
-  ];
-  for (const [slot, label] of groups) {
-    const title = document.createElement("p");
-    title.className = "slot-label";
-    title.textContent = label;
-    accessories.appendChild(title);
+  const catalog = state.catalog || { animals: [], parts: {}, colors: [], swatches: [] };
+  if (state.lookTab === "preset") {
+    const note = document.createElement("p");
+    note.className = "slot-label";
+    note.textContent = "點一個預設會填好全身，之後每個部位都能再改。";
+    panel.appendChild(note);
     const row = document.createElement("div");
     row.className = "choice-grid";
-    for (const option of catalog.accessories?.[slot] || []) {
+    for (const animal of catalog.animals || []) {
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = option.label;
-      button.setAttribute("aria-pressed", String(state.avatarAcc[slot] === option.id));
+      button.textContent = animal.label;
+      button.setAttribute("aria-pressed", String(state.avatarAnimal === animal.id));
       button.addEventListener("click", () => {
-        state.avatarAcc = { ...state.avatarAcc, [slot]: option.id };
-        buildAvatarChoices();
+        state.avatarAnimal = animal.id;
+        state.look = cloneLook(animal.look) || state.look;
+        buildLookEditor();
         paintPreview();
       });
       row.appendChild(button);
     }
-    accessories.appendChild(row);
+    panel.appendChild(row);
+    return;
   }
+  if (state.lookTab === "colors") {
+    buildColorPanel(panel, catalog);
+    return;
+  }
+  if (state.lookTab === "face") {
+    addChoiceGroup(panel, "眼睛", "eyes", catalog.parts?.eyes || []);
+    addChoiceGroup(panel, "嘴巴", "mouth", catalog.parts?.mouth || []);
+    addChoiceGroup(panel, "腮紅", "blush", catalog.parts?.blush || []);
+    addChoiceGroup(panel, "標記", "marking", catalog.parts?.marking || []);
+    return;
+  }
+  if (state.lookTab === "gear") {
+    addChoiceGroup(panel, "頭上", "head", catalog.parts?.head || []);
+    addChoiceGroup(panel, "臉上", "face", catalog.parts?.face || []);
+    addChoiceGroup(panel, "頸部", "neck", catalog.parts?.neck || []);
+    addChoiceGroup(panel, "手上", "held", catalog.parts?.held || []);
+    return;
+  }
+  const titles = { body: "體型", ears: "耳朵", tail: "尾巴" };
+  addChoiceGroup(panel, titles[state.lookTab] || state.lookTab, state.lookTab, catalog.parts?.[state.lookTab] || []);
+}
+
+function addChoiceGroup(panel, label, key, options) {
+  const title = document.createElement("p");
+  title.className = "slot-label";
+  title.textContent = label;
+  panel.appendChild(title);
+  const row = document.createElement("div");
+  row.className = "choice-grid";
+  for (const option of options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = option.label;
+    button.setAttribute("aria-pressed", String(state.look?.[key] === option.id));
+    button.addEventListener("click", () => {
+      state.look = { ...state.look, [key]: option.id };
+      state.avatarAnimal = "custom";
+      buildLookEditor();
+      paintPreview();
+    });
+    row.appendChild(button);
+  }
+  panel.appendChild(row);
+}
+
+function buildColorPanel(panel, catalog) {
+  const keys = catalog.colors || [];
+  if (!keys.some((item) => item.id === state.colorKey)) state.colorKey = keys[0]?.id || "body";
+  const chips = document.createElement("div");
+  chips.className = "choice-grid";
+  for (const item of keys) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = item.label;
+    button.setAttribute("aria-pressed", String(state.colorKey === item.id));
+    button.addEventListener("click", () => {
+      state.colorKey = item.id;
+      buildLookEditor();
+    });
+    chips.appendChild(button);
+  }
+  panel.appendChild(chips);
+  if (state.colorKey === "belly") {
+    const belly = document.createElement("button");
+    belly.type = "button";
+    belly.textContent = state.look?.belly ? "肚子色塊：開" : "肚子色塊：關";
+    belly.setAttribute("aria-pressed", String(Boolean(state.look?.belly)));
+    belly.addEventListener("click", () => {
+      state.look = { ...state.look, belly: !state.look?.belly };
+      state.avatarAnimal = "custom";
+      buildLookEditor();
+      paintPreview();
+    });
+    panel.appendChild(belly);
+  }
+  const item = keys.find((entry) => entry.id === state.colorKey);
+  if (!item) return;
+  const block = document.createElement("div");
+  block.className = "color-row";
+  const swatches = document.createElement("div");
+  swatches.className = "swatches";
+  const current = String(state.look?.colors?.[item.id] || "").toLowerCase();
+  for (const swatch of catalog.swatches || []) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.style.background = swatch;
+    button.setAttribute("aria-label", `${item.label} ${swatch}`);
+    button.setAttribute("aria-pressed", String(current === swatch.toLowerCase()));
+    button.addEventListener("click", () => {
+      state.look = { ...state.look, colors: { ...state.look.colors, [item.id]: swatch } };
+      state.avatarAnimal = "custom";
+      buildLookEditor();
+      paintPreview();
+    });
+    swatches.appendChild(button);
+  }
+  block.appendChild(swatches);
+  const input = document.createElement("input");
+  input.type = "color";
+  input.value = /^#[0-9a-f]{6}$/.test(current) ? current : "#f06292";
+  input.setAttribute("aria-label", `${item.label}自訂`);
+  input.addEventListener("input", () => {
+    state.look = { ...state.look, colors: { ...state.look.colors, [item.id]: input.value.toLowerCase() } };
+    state.avatarAnimal = "custom";
+    paintPreview();
+  });
+  block.appendChild(input);
+  panel.appendChild(block);
+}
+
+function randomLook() {
+  const catalog = state.catalog;
+  if (!catalog?.parts || !state.look) return;
+  const pick = (list) => list[Math.floor(Math.random() * list.length)]?.id;
+  const swatches = catalog.swatches || [];
+  const color = () => swatches[Math.floor(Math.random() * swatches.length)] || "#f06292";
+  const colors = {};
+  for (const item of catalog.colors || []) colors[item.id] = color();
+  state.look = {
+    v: 2,
+    body: pick(catalog.parts.body),
+    ears: pick(catalog.parts.ears),
+    tail: pick(catalog.parts.tail),
+    belly: Math.random() < 0.8,
+    eyes: pick(catalog.parts.eyes),
+    mouth: pick(catalog.parts.mouth),
+    blush: pick(catalog.parts.blush),
+    marking: pick(catalog.parts.marking),
+    head: pick(catalog.parts.head),
+    face: pick(catalog.parts.face),
+    neck: pick(catalog.parts.neck),
+    held: pick(catalog.parts.held),
+    colors,
+  };
+  state.avatarAnimal = "custom";
+  buildLookEditor();
+  paintPreview();
 }
 
 function paintPreview() {
-  const preview = $("preview");
-  const context = preview.getContext("2d");
-  context.clearRect(0, 0, preview.width, preview.height);
-  drawAnimal(context, state.avatarAnimal, state.avatarAcc, preview.width / 2, preview.height - 28, {
-    frame: performance.now() / 280,
-    dir: 1,
-  });
+  world.preview(state.look, performance.now() / 1000);
 }
 
-function drawGateArt() {
-  const art = $("gate-art");
-  const context = art.getContext("2d");
-  context.clearRect(0, 0, art.width, art.height);
-  ["cat", "rabbit", "fox", "panda", "bear", "frog"].forEach((animal, index) => {
-    drawAnimal(context, animal, { hat: index % 2 ? "flower" : "none", glasses: "none", extra: "none" }, 36 + index * 56, 86, { dir: 1 });
-  });
+function paintCam() {
+  const button = $("cam-btn");
+  if (!button) return;
+  const follow = world.mode === "follow";
+  button.textContent = follow ? "跟隨" : "俯瞰";
+  button.setAttribute("aria-pressed", follow ? "true" : "false");
 }
 
 function applySession(data) {
@@ -291,18 +579,25 @@ function onNet(message) {
     state.furniture = message.furniture || [];
     state.specs = new Map((message.palette || []).map((item) => [item.kind, item]));
     state.me = { ...message.you };
+    state.seat = message.you.seat || null;
     state.profile = {
       id: message.you.id,
       displayName: message.you.displayName,
       animal: message.you.animal,
-      accessories: message.you.accessories,
+      look: message.you.look,
     };
     state.sentX = state.me.x;
     state.sentY = state.me.y;
     state.others.clear();
+    state.whisper = null;
+    state.groups = new Map();
+    state.memberGroup = new Map();
+    state.asks = [];
+    state.whisperArm = false;
     for (const player of message.others || []) {
       state.others.set(player.id, { ...player, tx: player.x, ty: player.y });
     }
+    for (const group of message.hush || []) applyGroup(group.group, group.members);
     state.connected = true;
     state.backoff = 700;
     state.editing = false;
@@ -311,6 +606,7 @@ function onNet(message) {
     setConn("已連線");
     buildPalette();
     renderOnline();
+    paintWhisper();
     resize();
     return;
   }
@@ -320,6 +616,7 @@ function onNet(message) {
     state.others.set(player.id, { ...player, tx: player.x, ty: player.y });
     renderOnline();
   } else if (message.t === "leave") {
+    forgetMember(message.id);
     state.others.delete(message.id);
     state.bubbles.delete(message.id);
     renderOnline();
@@ -334,13 +631,27 @@ function onNet(message) {
       other.y = other.ty;
     }
   } else if (message.t === "chat") {
-    state.bubbles.set(message.id, { text: message.text, until: performance.now() + 4500 });
+    if (state.tape.length > 60) state.tape.shift();
+    state.tape.push({ t: "chat", id: message.id, text: message.text, whisper: Boolean(message.whisper) });
+    state.bubbles.set(message.id, { text: message.text, until: performance.now() + 4500, whisper: Boolean(message.whisper) });
+  } else if (message.t === "hush") {
+    if (state.tape.length > 60) state.tape.shift();
+    state.tape.push({ t: "hush", group: message.group, members: message.members || [] });
+    applyGroup(message.group, message.members, message.by);
+  } else if (message.t === "ask") {
+    if (message.off || message.pending) {
+      state.asks = state.asks.filter((ask) => ask.id !== message.id);
+    } else if (state.whisper && state.whisper === message.group) {
+      state.asks = state.asks.filter((ask) => ask.id !== message.id);
+      state.asks.push({ id: message.id, group: message.group, until: message.until });
+    }
+    paintAsks();
   } else if (message.t === "profile") {
     const apply = (person) => {
       if (!person) return;
       person.displayName = message.displayName;
       person.animal = message.animal;
-      person.accessories = message.accessories;
+      person.look = message.look;
     };
     if (state.me?.id === message.id) {
       apply(state.me);
@@ -351,6 +662,80 @@ function onNet(message) {
       }
     } else apply(state.others.get(message.id));
     renderOnline();
+  } else if (message.t === "bump") {
+    world.nudge(message.id, message.nx, message.ny);
+    world.nudge(message.other, -message.nx, -message.ny);
+  } else if (message.t === "sit") {
+    const person = message.id === state.me?.id ? state.me : state.others.get(message.id);
+    if (person) {
+      person.seat = message.chair;
+      person.x = message.cx;
+      person.y = message.cy;
+      person.tx = message.cx;
+      person.ty = message.cy;
+    }
+    const chair = state.furniture.find((item) => item.id === message.chair);
+    if (chair) {
+      chair.seat = message.id;
+      chair.x = message.x;
+      chair.y = message.y;
+      chair.rot = message.rot || 0;
+      chair.speed = 0;
+    }
+    if (message.id === state.me?.id) {
+      state.seat = message.chair;
+      state.rising = false;
+      state.ride = { vx: 0, vy: 0 };
+      state.path = [];
+      state.sentX = message.x;
+      state.sentY = message.y;
+    }
+  } else if (message.t === "rise") {
+    const person = message.id === state.me?.id ? state.me : state.others.get(message.id);
+    if (person) {
+      person.seat = null;
+      person.x = message.x;
+      person.y = message.y;
+      person.tx = message.x;
+      person.ty = message.y;
+    }
+    const chair = state.furniture.find((item) => item.id === message.chair);
+    if (chair) {
+      chair.seat = null;
+      chair.speed = 0;
+    }
+    if (message.id === state.me?.id) {
+      state.seat = null;
+      state.rising = false;
+      state.ride = { vx: 0, vy: 0 };
+      state.rideWish = null;
+      state.sentX = message.x;
+      state.sentY = message.y;
+    }
+  } else if (message.t === "glide") {
+    const chair = state.furniture.find((item) => item.id === message.chair);
+    const mine = message.id === state.me?.id;
+    if (chair && (!mine || message.snap)) {
+      chair.x = message.x;
+      chair.y = message.y;
+      chair.rot = message.rot || 0;
+      chair.speed = Math.hypot(message.vx || 0, message.vy || 0);
+      chair.seat = message.id;
+    }
+    const person = mine ? state.me : state.others.get(message.id);
+    if (person && (!mine || message.snap)) {
+      person.seat = message.chair;
+      person.tx = message.cx;
+      person.ty = message.cy;
+      if (message.snap || !mine) {
+        person.x = message.cx;
+        person.y = message.cy;
+      }
+    }
+    if (mine && message.snap) {
+      state.seat = message.chair;
+      state.ride = { vx: message.vx || 0, vy: message.vy || 0 };
+    }
   } else if (message.t === "furniture") {
     const dragged = state.drag?.id;
     state.furniture = message.furniture || [];
@@ -386,6 +771,20 @@ function sendMove(force = false) {
   if (!state.me) return;
   const now = performance.now();
   if (!force && now - state.sentAt < 90) return;
+  if (state.seat) {
+    const item = state.furniture.find((entry) => entry.id === state.seat);
+    if (!item) return;
+    if (!force && Math.hypot(item.x - state.sentX, item.y - state.sentY) < 0.6 && Math.hypot(state.ride.vx, state.ride.vy) < 8) {
+      state.dirty = false;
+      return;
+    }
+    state.sentX = item.x;
+    state.sentY = item.y;
+    state.sentAt = now;
+    state.dirty = false;
+    send({ t: "glide", id: item.id, x: item.x, y: item.y, rot: item.rot || 0, vx: state.ride.vx, vy: state.ride.vy });
+    return;
+  }
   if (Math.hypot(state.me.x - state.sentX, state.me.y - state.sentY) < 0.4) {
     state.dirty = false;
     return;
@@ -497,8 +896,7 @@ function sizeOf(item) {
   return { w: spec.w, h: spec.h, solid: spec.solid };
 }
 
-function collides(x, y, ignoreId) {
-  const radius = 11;
+function collides(x, y, ignoreId, radius = 11) {
   const minX = Math.floor((x - radius) / TILE);
   const maxX = Math.floor((x + radius) / TILE);
   const minY = Math.floor((y - radius) / TILE);
@@ -513,25 +911,125 @@ function collides(x, y, ignoreId) {
   }
   for (const item of state.furniture) {
     if (item.id === ignoreId) continue;
+    if (item.kind === "chair" && item.seat) continue;
     const size = sizeOf(item);
     if (size.solid && circleRect(x, y, radius, item.x, item.y, size.w, size.h)) return true;
   }
-  const kiki = state.map?.kiki;
-  if (kiki && Math.hypot(x - kiki.x, y - kiki.y) < radius + 14) return true;
   return false;
+}
+
+function bodyList() {
+  const list = [];
+  const kiki = state.map?.kiki;
+  if (kiki) list.push({ id: "kiki", x: kiki.x, y: kiki.y, r: world.radius({ body: "bean" }) });
+  for (const person of state.others.values()) {
+    list.push({ id: person.id, x: person.x, y: person.y, r: world.radius(person.look) });
+  }
+  return list;
+}
+
+function resolveBodies(x, y, radius) {
+  let cx = x;
+  let cy = y;
+  let hit = null;
+  const list = bodyList();
+  for (let pass = 0; pass < 4; pass++) {
+    for (const other of list) {
+      let dx = cx - other.x;
+      let dy = cy - other.y;
+      let dist = Math.hypot(dx, dy);
+      const min = radius + other.r;
+      if (dist < 0.0001) { dx = 1; dy = 0; dist = 1; }
+      if (dist < min) {
+        cx += (dx / dist) * (min - dist);
+        cy += (dy / dist) * (min - dist);
+        hit = { id: other.id, nx: dx / dist, ny: dy / dist };
+      }
+    }
+  }
+  return { x: cx, y: cy, hit };
+}
+
+function noteBump(hit, bounce) {
+  if (!hit) return;
+  const now = performance.now();
+  if (now - (state.bumpAt.get(hit.id) || 0) < 520) return;
+  state.bumpAt.set(hit.id, now);
+  world.nudge(state.me.id, hit.nx, hit.ny);
+  world.nudge(hit.id, -hit.nx, -hit.ny);
+  send({ t: "bump", other: hit.id, nx: hit.nx, ny: hit.ny });
+  if (bounce && state.seat) {
+    const vn = state.ride.vx * hit.nx + state.ride.vy * hit.ny;
+    if (vn < 0) {
+      state.ride.vx -= 1.35 * vn * hit.nx;
+      state.ride.vy -= 1.35 * vn * hit.ny;
+    }
+  }
+}
+
+function wallSlide(ox, oy, dx, dy) {
+  let x = ox + dx;
+  let y = oy + dy;
+  if (collides(x, oy)) x = ox;
+  if (collides(x, y)) y = oy;
+  return { x, y };
+}
+
+function acceptBody(x, y, radius, fallback) {
+  const resolved = resolveBodies(x, y, radius);
+  if (!collides(resolved.x, resolved.y)) return resolved;
+  if (!collides(resolved.x, fallback.y)) {
+    const again = resolveBodies(resolved.x, fallback.y, radius);
+    if (!collides(again.x, again.y)) return again;
+  }
+  if (!collides(fallback.x, resolved.y)) {
+    const again = resolveBodies(fallback.x, resolved.y, radius);
+    if (!collides(again.x, again.y)) return again;
+  }
+  return { x: fallback.x, y: fallback.y, hit: resolved.hit };
 }
 
 function tryMove(dx, dy) {
   const beforeX = state.me.x;
   const beforeY = state.me.y;
-  state.me.x += dx;
-  if (collides(state.me.x, state.me.y)) state.me.x = beforeX;
-  state.me.y += dy;
-  if (collides(state.me.x, state.me.y)) state.me.y = beforeY;
+  const radius = world.radius(state.me.look);
+  const direct = wallSlide(beforeX, beforeY, dx, dy);
+  let resolved = acceptBody(direct.x, direct.y, radius, { x: beforeX, y: beforeY });
+  const want = Math.hypot(dx, dy);
+  const got = Math.hypot(resolved.x - beforeX, resolved.y - beforeY);
+  if (resolved.hit && want > 0.01 && got < want * 0.45) {
+    const nx = resolved.hit.nx;
+    const ny = resolved.hit.ny;
+    let tx = -ny;
+    let ty = nx;
+    if (tx * dx + ty * dy < 0) { tx = -tx; ty = -ty; }
+    const slide = wallSlide(beforeX, beforeY, tx * want, ty * want);
+    const slid = acceptBody(slide.x, slide.y, radius, { x: beforeX, y: beforeY });
+    if (Math.hypot(slid.x - beforeX, slid.y - beforeY) > got) resolved = slid;
+  }
+  state.me.x = resolved.x;
+  state.me.y = resolved.y;
   if (state.me.x !== beforeX) state.me.dir = state.me.x > beforeX ? 1 : -1;
   const moved = state.me.x !== beforeX || state.me.y !== beforeY;
   if (moved) state.dirty = true;
+  if (resolved.hit) noteBump(resolved.hit, false);
   return moved;
+}
+
+function freeSpot(x, y) {
+  const radius = world.radius(state.me?.look);
+  const open = (px, py) => !collides(px, py) && Math.hypot(resolveBodies(px, py, radius).x - px, resolveBodies(px, py, radius).y - py) < 0.8;
+  if (open(x, y)) return { x, y };
+  for (let ring = 1; ring <= 6; ring++) {
+    const step = ring * 26;
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2;
+      const px = x + Math.cos(angle) * step;
+      const py = y + Math.sin(angle) * step;
+      if (open(px, py)) return { x: px, y: py };
+    }
+  }
+  return { x, y };
 }
 
 function tileBlocked(tx, ty) {
@@ -546,7 +1044,11 @@ function tileBlocked(tx, ty) {
     if (size.solid && cx >= item.x && cx <= item.x + size.w && cy >= item.y && cy <= item.y + size.h) return true;
   }
   const kiki = state.map.kiki;
-  if (Math.hypot(cx - kiki.x, cy - kiki.y) < 20) return true;
+  const mine = world.radius(state.me?.look);
+  if (Math.hypot(cx - kiki.x, cy - kiki.y) < world.radius({ body: "bean" }) + mine - 6) return true;
+  for (const person of state.others.values()) {
+    if (Math.hypot(cx - person.x, cy - person.y) < world.radius(person.look) + mine - 6) return true;
+  }
   return false;
 }
 
@@ -601,13 +1103,11 @@ function findPath(x, y) {
 }
 
 function screenToWorld(clientX, clientY) {
-  const rect = canvas.getBoundingClientRect();
-  return { x: clientX - rect.left + state.cam.x, y: clientY - rect.top + state.cam.y };
+  return world.screenToWorld(clientX, clientY);
 }
 
 function worldToScreen(x, y) {
-  const rect = canvas.getBoundingClientRect();
-  return { x: rect.left + (x - state.cam.x), y: rect.top + (y - state.cam.y) };
+  return world.worldToScreen(x, y);
 }
 
 function usedProps() {
@@ -615,8 +1115,95 @@ function usedProps() {
 }
 
 function standPoint(prop) {
-  return { x: prop.x + prop.w / 2, y: prop.y + prop.h + 16 };
+  return freeSpot(prop.x + prop.w / 2, prop.y + prop.h + 18);
 }
+
+function chairCenter(item) {
+  return { x: item.x + 16, y: item.y + 13 };
+}
+
+function nearestChair() {
+  if (!state.me || state.seat) return null;
+  let best = null;
+  for (const item of state.furniture) {
+    if (item.kind !== "chair" || item.seat) continue;
+    const center = chairCenter(item);
+    const dist = Math.hypot(state.me.x - center.x, state.me.y - center.y);
+    if (dist < 78 && (!best || dist < best.dist)) best = { item, dist, ...center };
+  }
+  return best;
+}
+
+function applyChairMotion(item, cx, cy, rot, speed) {
+  item.x = cx - 16;
+  item.y = cy - 13;
+  item.rot = rot;
+  item.speed = speed;
+}
+
+function rideStep(dt, wishX, wishY) {
+  const item = state.furniture.find((entry) => entry.id === state.seat);
+  if (!item) {
+    state.seat = null;
+    if (state.me) state.me.seat = null;
+    return;
+  }
+  let { vx, vy } = state.ride;
+  vx += wishX * 420 * dt;
+  vy += wishY * 420 * dt;
+  const speed0 = Math.hypot(vx, vy);
+  const max = 210;
+  if (speed0 > max) {
+    vx *= max / speed0;
+    vy *= max / speed0;
+  }
+  const damp = Math.exp(-2.7 * dt);
+  vx *= damp;
+  vy *= damp;
+  if (!wishX && !wishY && Math.hypot(vx, vy) < 12) {
+    vx = 0;
+    vy = 0;
+  }
+  const center = chairCenter(item);
+  let x = center.x + vx * dt;
+  let y = center.y + vy * dt;
+  const radius = Math.max(CHAIR_R, world.radius(state.me.look) * 0.72);
+  if (collides(x, center.y, item.id, CHAIR_R)) {
+    x = center.x;
+    vx *= -0.35;
+  }
+  if (collides(x, y, item.id, CHAIR_R)) {
+    y = center.y;
+    vy *= -0.35;
+  }
+  const resolved = resolveBodies(x, y, radius);
+  if (resolved.hit) noteBump(resolved.hit, true);
+  if (collides(resolved.x, resolved.y, item.id, CHAIR_R)) {
+    x = center.x;
+    y = center.y;
+    vx *= 0.2;
+    vy *= 0.2;
+  } else {
+    x = resolved.x;
+    y = resolved.y;
+  }
+  let rot = item.rot || 0;
+  const speed = Math.hypot(vx, vy);
+  if (speed > 16) {
+    const target = Math.atan2(vx, vy) * 180 / Math.PI;
+    const delta = ((target - rot + 540) % 360) - 180;
+    rot += delta * Math.min(1, dt * 6);
+  }
+  applyChairMotion(item, x, y, rot, speed);
+  state.ride = { vx, vy };
+  state.me.x = x;
+  state.me.y = y;
+  state.me.seat = item.id;
+  if (Math.abs(vx) > 1) state.me.dir = vx > 0 ? 1 : -1;
+  state.dirty = true;
+}
+
+const CHAIR_R = 18;
 
 function nearestUse() {
   if (!state.me) return null;
@@ -727,9 +1314,35 @@ async function submitScore(payload) {
   if (data.ok && state.boardOpen) void refreshBoard();
 }
 
+function standUp() {
+  const item = state.furniture.find((entry) => entry.id === state.seat);
+  state.ride = { vx: 0, vy: 0 };
+  state.rideWish = null;
+  state.rising = true;
+  if (item) {
+    item.speed = 0;
+    state.sentX = item.x;
+    state.sentY = item.y;
+    state.sentAt = performance.now();
+    state.dirty = false;
+    send({ t: "glide", id: item.id, x: item.x, y: item.y, rot: item.rot || 0, vx: 0, vy: 0 });
+  }
+  send({ t: "rise" });
+}
+
 function interact() {
   if (!state.me || state.editing || state.help || state.arcade || state.boardOpen || !$("avatar").hidden) return;
+  if (state.seat) {
+    standUp();
+    return;
+  }
   sendMove(true);
+  const chair = nearestChair();
+  if (chair) {
+    send({ t: "sit", id: chair.item.id });
+    state.path = [];
+    return;
+  }
   if (nearKiki()) {
     $("dialogue-text").textContent = "你好呀，我是櫃檯 Kiki 小姐。想移動螢幕、鍵盤、椅子或其他設備就跟我說。房間的牆不能改喔。";
     $("dialogue").hidden = false;
@@ -767,29 +1380,24 @@ function placeArmed(x, y) {
   setHint("");
 }
 
-function onPointerDown(event) {
-  if (event.button !== 0) return;
-  if (event.target !== canvas) return;
-  $("chat-input").blur();
-  const world = screenToWorld(event.clientX, event.clientY);
-  if (state.editing) {
-    const hit = hitFurniture(world.x, world.y);
-    if (hit) {
-      state.selected = hit.id;
-      state.drag = { id: hit.id, item: hit, dx: world.x - hit.x, dy: world.y - hit.y, ox: hit.x, oy: hit.y };
-      canvas.setPointerCapture(event.pointerId);
-      return;
-    }
-    if (state.armed) {
-      placeArmed(world.x, world.y);
-      return;
-    }
-    state.selected = null;
-    state.pan = { x: event.clientX, y: event.clientY, fx: state.focus.x, fy: state.focus.y };
-    canvas.setPointerCapture(event.pointerId);
+const pointers = new Map();
+let pinch = null;
+
+function walkOrUse(point) {
+  const furn = hitFurniture(point.x, point.y);
+  if (furn?.kind === "chair") {
+    const center = chairCenter(furn);
+    if (nearestChair()?.item.id === furn.id) interact();
+    else state.path = findPath(freeSpot(center.x, center.y + 36).x, freeSpot(center.x, center.y + 36).y);
     return;
   }
-  const spot = hitUse(world.x, world.y);
+  if (furn?.kind === "sofa") {
+    const size = sizeOf(furn);
+    const spot = freeSpot(furn.x + size.w / 2, furn.y + size.h + 24);
+    state.path = findPath(spot.x, spot.y);
+    return;
+  }
+  const spot = hitUse(point.x, point.y);
   if (spot) {
     const stand = standPoint(spot);
     if (nearestUse()?.use === spot.use) interact();
@@ -797,28 +1405,86 @@ function onPointerDown(event) {
     return;
   }
   const kiki = state.map?.kiki;
-  if (kiki && Math.hypot(world.x - kiki.x, world.y - kiki.y) < 34) {
+  if (kiki && Math.hypot(point.x - kiki.x, point.y - kiki.y) < 36) {
     if (nearKiki()) interact();
-    else {
-      state.path = findPath(state.map.talk.x, state.map.talk.y);
-    }
+    else state.path = findPath(state.map.talk.x, state.map.talk.y);
     return;
   }
-  state.path = findPath(world.x, world.y);
+  state.path = findPath(point.x, point.y);
+}
+
+function onPointerDown(event) {
+  if (event.button !== 0 && event.pointerType !== "touch") return;
+  if (event.target !== canvas) return;
+  $("chat-input").blur();
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (pointers.size >= 2) {
+    const pts = [...pointers.values()];
+    pinch = { dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1 };
+    state.orbit = null;
+    state.drag = null;
+    state.pan = null;
+    return;
+  }
+  const point = screenToWorld(event.clientX, event.clientY);
+  if (state.editing) {
+    const hit = hitFurniture(point.x, point.y);
+    if (hit) {
+      state.selected = hit.id;
+      state.drag = { id: hit.id, item: hit, dx: point.x - hit.x, dy: point.y - hit.y, ox: hit.x, oy: hit.y };
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+    if (state.armed) {
+      placeArmed(point.x, point.y);
+      return;
+    }
+    state.selected = null;
+    state.pan = { x: event.clientX, y: event.clientY };
+    canvas.setPointerCapture(event.pointerId);
+    return;
+  }
+  state.orbit = { id: event.pointerId, x: event.clientX, y: event.clientY, ox: event.clientX, oy: event.clientY, moved: false, world: point };
+  try { canvas.setPointerCapture(event.pointerId); } catch { /* ignore */ }
 }
 
 function onPointerMove(event) {
+  if (pointers.has(event.pointerId)) pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (pinch && pointers.size >= 2) {
+    const pts = [...pointers.values()];
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+    world.zoom((pinch.dist - dist) * 1.6);
+    pinch.dist = dist;
+    return;
+  }
   if (state.drag?.item) {
-    const world = screenToWorld(event.clientX, event.clientY);
-    state.drag.item.x = Math.round((world.x - state.drag.dx) / 4) * 4;
-    state.drag.item.y = Math.round((world.y - state.drag.dy) / 4) * 4;
+    const point = screenToWorld(event.clientX, event.clientY);
+    state.drag.item.x = Math.round((point.x - state.drag.dx) / 4) * 4;
+    state.drag.item.y = Math.round((point.y - state.drag.dy) / 4) * 4;
   } else if (state.pan && state.focus) {
-    state.focus.x = state.pan.fx - (event.clientX - state.pan.x);
-    state.focus.y = state.pan.fy - (event.clientY - state.pan.y);
+    const now = screenToWorld(event.clientX, event.clientY);
+    const then = screenToWorld(state.pan.x, state.pan.y);
+    state.focus.x += then.x - now.x;
+    state.focus.y += then.y - now.y;
+    state.pan.x = event.clientX;
+    state.pan.y = event.clientY;
+  } else if (state.orbit && event.pointerId === state.orbit.id) {
+    const dx = event.clientX - state.orbit.x;
+    const dy = event.clientY - state.orbit.y;
+    if (Math.hypot(event.clientX - state.orbit.ox, event.clientY - state.orbit.oy) > 6) state.orbit.moved = true;
+    if (state.orbit.moved) world.orbit(dx, dy);
+    state.orbit.x = event.clientX;
+    state.orbit.y = event.clientY;
   }
 }
 
-function onPointerUp() {
+function onPointerUp(event) {
+  pointers.delete(event.pointerId);
+  if (pointers.size < 2) pinch = null;
+  if (state.orbit && (!event || event.pointerId === state.orbit.id)) {
+    if (!state.orbit.moved) walkOrUse(state.orbit.world);
+    state.orbit = null;
+  }
   if (state.drag?.item) {
     const item = state.drag.item;
     if (Math.hypot(item.x - state.drag.ox, item.y - state.drag.oy) > 2) {
@@ -859,15 +1525,23 @@ $("chatbar").addEventListener("submit", (event) => {
   if (composing || justEnded) return;
   const text = chat.value.trim();
   if (!text) return;
-  send({ t: "chat", text });
+  send({ t: "chat", text, whisper: Boolean(state.whisper) });
   chat.value = "";
 });
 
 window.addEventListener("keydown", (event) => {
-  if (typingTarget(event)) return;
+  if (typingTarget(event) || composing || justEnded) return;
   if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) event.preventDefault();
+  if (event.key === "f" || event.key === "F") {
+    if (!event.repeat) toggleWhisper();
+    return;
+  }
   state.keys.add(event.key.toLowerCase());
   if (event.key === "e" || event.key === "E") interact();
+  if (event.key === "v" || event.key === "V") {
+    world.toggle();
+    paintCam();
+  }
   if (!state.editing || !state.selected) return;
   if (event.key === "Delete" || event.key === "Backspace") {
     event.preventDefault();
@@ -934,6 +1608,7 @@ $("btn-edit").addEventListener("click", () => {
   send({ t: "edit", on: true });
 });
 $("edit-done").addEventListener("click", () => send({ t: "edit", on: false }));
+$("chairs-home").addEventListener("click", () => send({ t: "furn", op: "home" }));
 $("help-btn").addEventListener("click", () => { state.help = true; $("help").hidden = false; });
 $("help-close").addEventListener("click", () => { state.help = false; $("help").hidden = true; });
 $("arcade-close").addEventListener("click", () => closeArcade());
@@ -960,9 +1635,10 @@ $("rename-form").addEventListener("submit", (event) => {
   $("rename-form").hidden = true;
 });
 $("avatar-cancel").addEventListener("click", () => { $("avatar").hidden = true; });
+$("avatar-random").addEventListener("click", () => randomLook());
 $("avatar-save").addEventListener("click", async () => {
   const displayName = $("avatar-name").value.trim() || profileNow()?.displayName;
-  const body = { displayName, animal: state.avatarAnimal, accessories: state.avatarAcc };
+  const body = { displayName, animal: state.avatarAnimal, look: state.look };
   if (!displayName) { $("avatar-error").textContent = "請輸入顯示名稱"; return; }
   if (state.avatarMode === "first") {
     const result = await api("/api/office/me", { method: "PUT", body });
@@ -977,20 +1653,9 @@ $("avatar-save").addEventListener("click", async () => {
 });
 
 function resize() {
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const width = Math.max(1, canvas.clientWidth);
-  const height = Math.max(1, canvas.clientHeight);
-  canvas.width = Math.floor(width * dpr);
-  canvas.height = Math.floor(height * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  world.resize();
 }
 window.addEventListener("resize", resize);
-
-function insets() {
-  const edit = $("editbar");
-  const top = edit && !edit.hidden ? edit.getBoundingClientRect().height + 8 : 64;
-  return { top, bottom: 78 };
-}
 
 function update(dt) {
   if (!state.me || state.gate || !$("avatar").hidden || state.help) return;
@@ -998,20 +1663,27 @@ function update(dt) {
   const right = state.keys.has("arrowright") || state.keys.has("d");
   const up = state.keys.has("arrowup") || state.keys.has("w");
   const down = state.keys.has("arrowdown") || state.keys.has("s");
-  let vx = (right ? 1 : 0) - (left ? 1 : 0);
-  let vy = (down ? 1 : 0) - (up ? 1 : 0);
+  const ix = (right ? 1 : 0) - (left ? 1 : 0);
+  const iy = (up ? 1 : 0) - (down ? 1 : 0);
+  const axes = world.axes();
+  const length = Math.hypot(ix, iy) || 1;
+  const vx = (ix * axes.rightX + iy * axes.forwardX) / length;
+  const vy = (ix * axes.rightY + iy * axes.forwardY) / length;
   if (state.editing && state.focus) {
-    if (vx || vy) {
-      const length = Math.hypot(vx, vy);
-      state.focus.x += (vx / length) * 520 * dt;
-      state.focus.y += (vy / length) * 520 * dt;
+    if (ix || iy) {
+      state.focus.x += vx * 520 * dt;
+      state.focus.y += vy * 520 * dt;
     }
   } else if (state.arcade || state.boardOpen) {
     state.path = [];
-  } else if (vx || vy) {
+  } else if (state.seat && !state.rising) {
     state.path = [];
-    const length = Math.hypot(vx, vy);
-    tryMove((vx / length) * SPEED * dt, (vy / length) * SPEED * dt);
+    const wishX = state.rideWish ? state.rideWish.x : vx;
+    const wishY = state.rideWish ? state.rideWish.y : vy;
+    rideStep(dt, wishX, wishY);
+  } else if (ix || iy) {
+    state.path = [];
+    tryMove(vx * SPEED * dt, vy * SPEED * dt);
   } else if (state.path.length) {
     const target = state.path[0];
     const dx = target.x - state.me.x;
@@ -1021,7 +1693,10 @@ function update(dt) {
     else {
       const step = Math.min(dist, SPEED * dt);
       const moved = tryMove((dx / dist) * step, (dy / dist) * step);
-      if (!moved) state.path = [];
+      if (!moved) {
+        const goal = state.path[state.path.length - 1];
+        state.path = findPath(goal.x, goal.y);
+      }
     }
   }
   if (state.dirty) sendMove(false);
@@ -1032,6 +1707,23 @@ function update(dt) {
   }
   const now = performance.now();
   for (const [id, bubble] of state.bubbles) if (bubble.until <= now) state.bubbles.delete(id);
+  if (state.asks.some((ask) => ask.until <= Date.now())) {
+    state.asks = state.asks.filter((ask) => ask.until > Date.now());
+    paintAsks();
+  }
+  if (state.whisper && !state.whisperArm) {
+    const members = state.groups.get(state.whisper) || [];
+    let close = false;
+    for (const id of members) {
+      if (id === state.me.id) continue;
+      const person = state.others.get(id);
+      if (person && Math.hypot(state.me.x - person.x, state.me.y - person.y) <= WHISPER_FAR) close = true;
+    }
+    if (!close) {
+      state.whisperArm = true;
+      send({ t: "hush", off: true });
+    }
+  }
   const zone = zoneAt(state.me.x, state.me.y);
   const name = zone?.name || "辦公室";
   if (name !== state.zoneName) {
@@ -1040,218 +1732,27 @@ function update(dt) {
   }
   if (!state.editing && $("dialogue").hidden && $("avatar").hidden) {
     const spot = nearestUse();
-    if (nearKiki()) setHint("按 E 跟 Kiki 小姐說話");
+    const near = nearestWhisper();
+    if (state.whisperNoteUntil > now) setHint(state.whisperNote);
+    else if (state.whisper) setHint("按 F 離開悄悄話");
+    else if (near?.grouped) setHint(`按 F 想加入 @${near.id} 的悄悄話`);
+    else if (near) setHint(`按 F 跟 @${near.id} 說悄悄話`);
+    else if (state.seat) setHint("按 E 起立");
+    else if (nearestChair()) setHint("按 E 坐下");
+    else if (nearKiki()) setHint("按 E 跟 Kiki 小姐說話");
     else if (spot?.use === "play") setHint("按 E 玩小遊戲");
     else if (spot?.use === "scores") setHint("按 E 看排行榜");
-    else if (inRestroom()) setHint("按 E 更換動物造型");
-    else if (state.hint.startsWith("按 E")) setHint("");
+    else if (inRestroom()) setHint("按 E 調整造型");
+    else if (state.hint.startsWith("按 E") || state.hint.startsWith("按 F") || state.hint.includes("悄悄話")) setHint("");
   }
-}
-
-function cameraTarget() {
-  const focus = state.editing && state.focus ? state.focus : state.me;
-  const viewW = canvas.clientWidth;
-  const viewH = canvas.clientHeight;
-  const pad = insets();
-  const worldW = state.map.cols * TILE;
-  const worldH = state.map.rows * TILE;
-  let x = focus.x - viewW / 2;
-  let y = focus.y - (pad.top + (viewH - pad.top - pad.bottom) / 2);
-  if (worldW <= viewW) x = (worldW - viewW) / 2;
-  else x = Math.max(0, Math.min(worldW - viewW, x));
-  if (worldH <= viewH) y = (worldH - viewH) / 2;
-  else y = Math.max(0, Math.min(worldH - viewH, y));
-  return { x, y };
-}
-
-function drawFloor() {
-  const viewW = canvas.clientWidth;
-  const viewH = canvas.clientHeight;
-  const x0 = Math.max(0, Math.floor(state.cam.x / TILE));
-  const y0 = Math.max(0, Math.floor(state.cam.y / TILE));
-  const x1 = Math.min(state.map.cols, Math.ceil((state.cam.x + viewW) / TILE));
-  const y1 = Math.min(state.map.rows, Math.ceil((state.cam.y + viewH) / TILE));
-  for (let ty = y0; ty < y1; ty++) {
-    for (let tx = x0; tx < x1; tx++) {
-      const zone = (state.map.zones || []).find((item) => tx >= item.x && ty >= item.y && tx < item.x + item.w && ty < item.y + item.h);
-      ctx.fillStyle = zone?.floor || "#f4ecdf";
-      const px = tx * TILE - state.cam.x;
-      const py = ty * TILE - state.cam.y;
-      ctx.fillRect(px, py, TILE, TILE);
-      if ((tx + ty) % 2 === 0) {
-        ctx.fillStyle = "rgba(255,255,255,0.18)";
-        ctx.fillRect(px, py, TILE, TILE);
-      }
-    }
-  }
-}
-
-function drawWalls() {
-  const viewW = canvas.clientWidth;
-  const viewH = canvas.clientHeight;
-  const x0 = Math.max(0, Math.floor(state.cam.x / TILE) - 1);
-  const y0 = Math.max(0, Math.floor(state.cam.y / TILE) - 1);
-  const x1 = Math.min(state.map.cols, Math.ceil((state.cam.x + viewW) / TILE) + 1);
-  const y1 = Math.min(state.map.rows, Math.ceil((state.cam.y + viewH) / TILE) + 1);
-  for (let ty = y0; ty < y1; ty++) {
-    for (let tx = x0; tx < x1; tx++) {
-      if (!isWall(tx, ty)) continue;
-      const px = tx * TILE - state.cam.x;
-      const py = ty * TILE - state.cam.y;
-      ctx.fillStyle = "#b79ad4";
-      ctx.fillRect(px, py, TILE, TILE);
-      ctx.fillStyle = "#e6d8f7";
-      ctx.fillRect(px, py, TILE, 6);
-      ctx.fillStyle = "#967fbf";
-      ctx.fillRect(px, py + TILE - 4, TILE, 4);
-    }
-  }
-}
-
-function wrapText(text, maxWidth) {
-  const lines = [];
-  let line = "";
-  for (const char of [...text]) {
-    const test = line + char;
-    if (line && ctx.measureText(test).width > maxWidth) {
-      lines.push(line);
-      line = char;
-    } else line = test;
-  }
-  if (line) lines.push(line);
-  return lines.slice(0, 3);
-}
-
-function drawName(x, y, name, id) {
-  ctx.font = `700 13px ${FONT}`;
-  const nameWidth = ctx.measureText(name).width;
-  ctx.font = `600 10px ${FONT}`;
-  const idWidth = ctx.measureText(`@${id}`).width;
-  const width = Math.max(nameWidth, idWidth) + 16;
-  const top = y - 78;
-  ctx.fillStyle = "rgba(255,253,251,0.94)";
-  roundBox(x - width / 2, top, width, 30, 8);
-  ctx.fillStyle = "#4a3b55";
-  ctx.font = `700 13px ${FONT}`;
-  ctx.textAlign = "center";
-  ctx.fillText(name, x, top + 14);
-  ctx.fillStyle = "#a08eae";
-  ctx.font = `600 10px ${FONT}`;
-  ctx.fillText(`@${id}`, x, top + 26);
-}
-
-function drawBubble(x, y, text, alpha) {
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.font = `700 13px ${FONT}`;
-  const lines = wrapText(text, 168);
-  const width = Math.max(...lines.map((line) => ctx.measureText(line).width)) + 16;
-  const height = lines.length * 16 + 10;
-  const top = y - 86 - height;
-  ctx.fillStyle = "#fff";
-  roundBox(x - width / 2, top, width, height, 10);
-  ctx.fillStyle = "#4a3b55";
-  ctx.textAlign = "center";
-  lines.forEach((line, index) => ctx.fillText(line, x, top + 16 + index * 16));
-  ctx.restore();
-}
-
-function roundBox(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-  ctx.fill();
-}
-
-function render() {
-  const viewW = canvas.clientWidth || 1;
-  const viewH = canvas.clientHeight || 1;
-  ctx.clearRect(0, 0, viewW, viewH);
-  ctx.fillStyle = "#d9c7ee";
-  ctx.fillRect(0, 0, viewW, viewH);
-  if (!state.map) return;
-  drawFloor();
-  drawWalls();
-  ctx.save();
-  ctx.translate(-state.cam.x, -state.cam.y);
-  const props = [...state.map.props].sort((a, b) => a.y + a.h - (b.y + b.h));
-  for (const prop of props) if (prop.kind === "rug" || prop.kind === "window") drawProp(ctx, prop);
-  for (const prop of props) if (prop.kind !== "rug" && prop.kind !== "window" && prop.kind !== "sign") drawProp(ctx, prop);
-  const furniture = [...state.furniture].sort((a, b) => a.y + sizeOf(a).h - (b.y + sizeOf(b).h));
-  for (const item of furniture) {
-    drawFurniture(ctx, item, state.specs.get(item.kind));
-    if (state.editing && item.id === state.selected) {
-      const size = sizeOf(item);
-      ctx.strokeStyle = "#f08aab";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(item.x - 3, item.y - 3, size.w + 6, size.h + 6);
-    }
-  }
-  for (const prop of props) if (prop.kind === "sign") drawProp(ctx, prop);
-  const actors = [];
-  if (state.me) actors.push({ kind: "me", y: state.me.y, person: state.me });
-  for (const other of state.others.values()) actors.push({ kind: "other", y: other.y, person: other });
-  actors.push({ kind: "kiki", y: state.map.kiki.y });
-  actors.sort((a, b) => a.y - b.y);
-  for (const actor of actors) {
-    if (actor.kind === "kiki") drawKiki(ctx, state.map.kiki.x, state.map.kiki.y, state.anim);
-    else {
-      const person = actor.person;
-      const moving = actor.kind === "me"
-        ? state.dirty || state.path.length > 0
-        : Math.hypot((person.tx ?? person.x) - person.x, (person.ty ?? person.y) - person.y) > 1;
-      drawAnimal(ctx, person.animal || "cat", person.accessories, person.x, person.y, {
-        dir: person.dir || 1,
-        frame: state.anim,
-        moving,
-      });
-    }
-  }
-  ctx.font = `700 13px ${FONT}`;
-  ctx.textAlign = "center";
-  ctx.fillStyle = "rgba(255,253,251,0.94)";
-  roundBox(state.map.kiki.x - 42, state.map.kiki.y - 78, 84, 30, 8);
-  ctx.fillStyle = "#4a3b55";
-  ctx.fillText("Kiki 小姐", state.map.kiki.x, state.map.kiki.y - 64);
-  ctx.fillStyle = "#a08eae";
-  ctx.font = `600 10px ${FONT}`;
-  ctx.fillText("櫃檯", state.map.kiki.x, state.map.kiki.y - 52);
-  const named = [];
-  if (state.me) named.push(state.me);
-  for (const other of state.others.values()) named.push(other);
-  for (const person of named) {
-    drawName(person.x, person.y, person.displayName, person.id);
-    const bubble = state.bubbles.get(person.id);
-    if (!bubble) continue;
-    const life = bubble.until - performance.now();
-    drawBubble(person.x, person.y, bubble.text, life < 700 ? Math.max(0, life / 700) : 1);
-  }
-  for (const zone of state.map.zones) {
-    ctx.globalAlpha = 0.16;
-    ctx.fillStyle = "#5c4a68";
-    ctx.font = `800 22px ${FONT}`;
-    ctx.textAlign = "center";
-    ctx.fillText(zone.name, (zone.x + zone.w / 2) * TILE, (zone.y + 1.2) * TILE);
-    ctx.globalAlpha = 1;
-  }
-  ctx.restore();
 }
 
 function frame(now) {
   const dt = Math.min(0.05, (now - (frame.last || now)) / 1000);
   frame.last = now;
   state.anim += dt * 6;
-  if (state.map && state.me && !state.gate) {
-    const target = cameraTarget();
-    state.cam.x += (target.x - state.cam.x) * Math.min(1, dt * 8);
-    state.cam.y += (target.y - state.cam.y) * Math.min(1, dt * 8);
-    update(dt);
-  }
-  render();
+  if (state.map && state.me && !state.gate) update(dt);
+  world.sync(state, dt);
   if (!$("avatar").hidden) paintPreview();
   requestAnimationFrame(frame);
 }
@@ -1270,22 +1771,72 @@ window.office = {
     return [...state.others.values()].map((other) => ({ ...other }));
   },
   get furniture() { return state.furniture.map((item) => ({ ...item })); },
-  get bubbles() { return [...state.bubbles.entries()].map(([id, bubble]) => ({ id, text: bubble.text })); },
+  get bubbles() { return [...state.bubbles.entries()].map(([id, bubble]) => ({ id, text: bubble.text, whisper: Boolean(bubble.whisper) })); },
+  get whisper() { return state.whisper; },
+  get group() { return state.whisper ? [...(state.groups.get(state.whisper) || [])] : []; },
+  get asks() { return state.asks.map((ask) => ({ ...ask })); },
+  get tape() { return state.tape.map((item) => ({ ...item })); },
   get zone() { return state.zoneName; },
   get editing() { return state.editing; },
   get connected() { return state.connected; },
   get arcade() { return state.arcade; },
   get boardOpen() { return state.boardOpen; },
   walkTo(x, y) { state.path = findPath(x, y); },
+  place(x, y) {
+    if (!state.me || state.seat) return;
+    const spot = freeSpot(x, y);
+    if (Math.abs(spot.x - state.me.x) > 0.5) state.me.dir = spot.x > state.me.x ? 1 : -1;
+    state.me.x = spot.x;
+    state.me.y = spot.y;
+    state.path = [];
+    state.dirty = true;
+    sendMove(true);
+  },
+  radius(look) { return world.radius(look); },
+  gap(id) { return state.me ? world.gap(state.me.id, id) : null; },
+  drive(x, y) { state.rideWish = x || y ? { x, y } : null; },
+  get seat() { return state.seat; },
   get socket() { return state.socket; },
+  get view3d() { return world.ok; },
+  get preview3d() { return world.previewOk; },
+  get cameraMode() { return world.mode; },
+  get cameraDist() { return world.dist; },
+  get cameraYaw() { return world.yaw; },
+  setView(view) { world.aim(view); },
+  poseCast(people) {
+    for (const person of people) {
+      const preset = presetOf(person.animal);
+      state.others.set(person.id, {
+        id: person.id,
+        displayName: person.name || person.id,
+        animal: person.animal || "custom",
+        look: cloneLook(person.look) || cloneLook(preset?.look),
+        x: person.x,
+        y: person.y,
+        tx: person.x,
+        ty: person.y,
+        dir: 1,
+      });
+    }
+  },
+  applyLook(look, animal) {
+    if (!state.me || !look) return;
+    state.me.look = cloneLook(look);
+    if (animal) state.me.animal = animal;
+  },
+  clearCast(ids) {
+    for (const id of ids) state.others.delete(id);
+  },
+  focusOn(x, y) {
+    state.focus = { x, y };
+  },
   worldToScreen,
   screenToWorld,
 };
 
 async function boot() {
-  try { await document.fonts.load(`16px ${FONT}`); } catch { /* ignore */ }
-  drawGateArt();
   ensureLoop();
+  paintCam();
   const token = localStorage.getItem(SESSION);
   if (token) {
     const me = await api("/api/office/me");
@@ -1306,5 +1857,15 @@ async function boot() {
 setInterval(() => {
   if (state.socket?.readyState === 1) state.socket.send("ping");
 }, 20000);
+
+canvas.addEventListener("wheel", (event) => {
+  if (state.gate) return;
+  event.preventDefault();
+  world.zoom(event.deltaY);
+}, { passive: false });
+$("cam-btn").addEventListener("click", () => {
+  world.toggle();
+  paintCam();
+});
 
 boot();

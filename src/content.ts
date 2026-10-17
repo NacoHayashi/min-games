@@ -41,7 +41,7 @@ export const FURNITURE: Record<string, { w: number; h: number; solid: boolean; l
   monitor: { w: 40, h: 26, solid: false, label: "螢幕" },
   keyboard: { w: 36, h: 12, solid: false, label: "鍵盤" },
   mouse: { w: 12, h: 16, solid: false, label: "滑鼠" },
-  chair: { w: 32, h: 26, solid: true, label: "椅子" },
+  chair: { w: 32, h: 26, solid: true, label: "辦公椅" },
   plant: { w: 26, h: 32, solid: true, label: "植栽" },
   lamp: { w: 18, h: 32, solid: true, label: "檯燈" },
   coffee: { w: 28, h: 30, solid: true, label: "咖啡機" },
@@ -101,8 +101,299 @@ export type OfficeMap = {
   furniture: Furn[];
 };
 
+export const BODY_IDS = ["mochi", "bean", "pear", "wide"] as const;
+export const EAR_IDS = ["none", "round", "point", "fox", "long", "flop", "nub"] as const;
+export const TAIL_IDS = ["none", "puff", "bush", "thin", "curl", "nub"] as const;
+export const EYE_IDS = ["dot", "highlight", "happy", "sleepy", "sparkle", "line"] as const;
+export const MOUTH_IDS = ["omega", "smile", "o", "cat", "none", "beak", "wide"] as const;
+export const BLUSH_IDS = ["none", "oval", "round", "lines"] as const;
+export const MARK_IDS = ["none", "freckles", "spot", "panda"] as const;
+export const HEAD_IDS = ["none", "beanie", "ribbon", "flower", "crown", "headphones"] as const;
+export const FACE_IDS = ["none", "round", "sun"] as const;
+export const NECK_IDS = ["none", "scarf", "bowtie"] as const;
+export const HELD_IDS = ["none", "mug", "balloon"] as const;
+export const COLOR_KEYS = ["body", "ear", "inner", "tip", "belly", "tail", "blush"] as const;
+
+export type LookColors = Record<(typeof COLOR_KEYS)[number], string>;
+
+export type Look = {
+  v: 2;
+  body: string;
+  ears: string;
+  tail: string;
+  belly: boolean;
+  eyes: string;
+  mouth: string;
+  blush: string;
+  marking: string;
+  head: string;
+  face: string;
+  neck: string;
+  held: string;
+  colors: LookColors;
+};
+
+const PARTS = {
+  body: [
+    { id: "mochi", label: "圓麻糬" },
+    { id: "bean", label: "豆豆" },
+    { id: "pear", label: "梨形" },
+    { id: "wide", label: "扁軟" },
+  ],
+  ears: [
+    { id: "none", label: "無" },
+    { id: "round", label: "圓耳" },
+    { id: "point", label: "尖耳" },
+    { id: "fox", label: "高尖耳" },
+    { id: "long", label: "長耳" },
+    { id: "flop", label: "垂耳" },
+    { id: "nub", label: "小突" },
+  ],
+  tail: [
+    { id: "none", label: "無" },
+    { id: "puff", label: "圓球" },
+    { id: "bush", label: "大蓬尾" },
+    { id: "thin", label: "細尾" },
+    { id: "curl", label: "捲尾" },
+    { id: "nub", label: "短尾" },
+  ],
+  eyes: [
+    { id: "dot", label: "圓點" },
+    { id: "highlight", label: "亮點" },
+    { id: "happy", label: "開心 ^^" },
+    { id: "sleepy", label: "瞇瞇眼" },
+    { id: "sparkle", label: "星星眼" },
+    { id: "line", label: "橫線" },
+  ],
+  mouth: [
+    { id: "omega", label: "ω" },
+    { id: "smile", label: "微笑" },
+    { id: "o", label: "小圓" },
+    { id: "cat", label: "貓嘴" },
+    { id: "none", label: "無" },
+    { id: "beak", label: "喙" },
+    { id: "wide", label: "大嘴" },
+  ],
+  blush: [
+    { id: "none", label: "無" },
+    { id: "oval", label: "橢圓" },
+    { id: "round", label: "圓形" },
+    { id: "lines", label: "線條" },
+  ],
+  marking: [
+    { id: "none", label: "無" },
+    { id: "freckles", label: "雀斑" },
+    { id: "spot", label: "額心" },
+    { id: "panda", label: "眼圈" },
+  ],
+  head: [
+    { id: "none", label: "無" },
+    { id: "beanie", label: "毛帽" },
+    { id: "ribbon", label: "蝴蝶結" },
+    { id: "flower", label: "小花" },
+    { id: "crown", label: "皇冠" },
+    { id: "headphones", label: "耳機" },
+  ],
+  face: [
+    { id: "none", label: "無" },
+    { id: "round", label: "圓框眼鏡" },
+    { id: "sun", label: "墨鏡" },
+  ],
+  neck: [
+    { id: "none", label: "無" },
+    { id: "scarf", label: "圍巾" },
+    { id: "bowtie", label: "領結" },
+  ],
+  held: [
+    { id: "none", label: "無" },
+    { id: "mug", label: "杯子" },
+    { id: "balloon", label: "氣球" },
+  ],
+} as const;
+
+export const SWATCHES = [
+  "#f06292", "#ff8fb8", "#d81b60", "#fff8fc", "#f7c2d8", "#d45388",
+  "#e0a045", "#b56a32", "#f6d7b0", "#c47a3a", "#8d5524", "#f8e0c0",
+  "#f06a28", "#ff7a62", "#4a1c0c", "#fff1e4", "#fffdfb", "#1a1a22",
+  "#243356", "#f0a050", "#3cb85c", "#dff5b0", "#7aa6ee", "#f26d9a",
+  "#ffd76a", "#6ec8be", "#c9b6ff", "#ff709c",
+];
+
+const COLOR_LABELS = [
+  { id: "body", label: "身體" },
+  { id: "ear", label: "耳朵" },
+  { id: "inner", label: "耳內" },
+  { id: "tip", label: "耳尖" },
+  { id: "belly", label: "肚子" },
+  { id: "tail", label: "尾巴" },
+  { id: "blush", label: "腮紅" },
+];
+
+function colors(partial: LookColors): LookColors {
+  return partial;
+}
+
+const PRESET_LOOKS: Record<string, Omit<Look, "v">> = {
+  cat: {
+    body: "bean", ears: "point", tail: "thin", belly: true,
+    eyes: "highlight", mouth: "omega", blush: "oval", marking: "none",
+    head: "none", face: "none", neck: "none", held: "none",
+    colors: colors({ body: "#f06292", ear: "#f06292", inner: "#d81b60", tip: "#ad1457", belly: "#ffe4ef", tail: "#f06292", blush: "#ff709c" }),
+  },
+  dog: {
+    body: "bean", ears: "flop", tail: "curl", belly: true,
+    eyes: "highlight", mouth: "smile", blush: "oval", marking: "none",
+    head: "none", face: "none", neck: "none", held: "none",
+    colors: colors({ body: "#e0a045", ear: "#b56a32", inner: "#f6d7b0", tip: "#8d5524", belly: "#fff0d0", tail: "#b56a32", blush: "#ff709c" }),
+  },
+  rabbit: {
+    body: "bean", ears: "long", tail: "puff", belly: true,
+    eyes: "highlight", mouth: "omega", blush: "oval", marking: "none",
+    head: "none", face: "none", neck: "none", held: "none",
+    colors: colors({ body: "#fff8fc", ear: "#f7c2d8", inner: "#d45388", tip: "#f7c2d8", belly: "#ffffff", tail: "#fffdfb", blush: "#ff709c" }),
+  },
+  bear: {
+    body: "bean", ears: "round", tail: "nub", belly: true,
+    eyes: "highlight", mouth: "smile", blush: "round", marking: "none",
+    head: "none", face: "none", neck: "none", held: "none",
+    colors: colors({ body: "#c47a3a", ear: "#8d5524", inner: "#e0a070", tip: "#8d5524", belly: "#f8e0c0", tail: "#fffdfb", blush: "#ff709c" }),
+  },
+  fox: {
+    body: "bean", ears: "fox", tail: "bush", belly: true,
+    eyes: "highlight", mouth: "omega", blush: "oval", marking: "none",
+    head: "none", face: "none", neck: "none", held: "none",
+    colors: colors({ body: "#f06a28", ear: "#f06a28", inner: "#ff7a62", tip: "#4a1c0c", belly: "#fff1e4", tail: "#f06a28", blush: "#ff709c" }),
+  },
+  panda: {
+    body: "bean", ears: "round", tail: "nub", belly: false,
+    eyes: "highlight", mouth: "smile", blush: "none", marking: "panda",
+    head: "none", face: "none", neck: "none", held: "none",
+    colors: colors({ body: "#fffdfb", ear: "#1a1a22", inner: "#3a3544", tip: "#1a1a22", belly: "#ffffff", tail: "#fffdfb", blush: "#ff709c" }),
+  },
+  penguin: {
+    body: "bean", ears: "none", tail: "none", belly: true,
+    eyes: "highlight", mouth: "beak", blush: "none", marking: "none",
+    head: "none", face: "none", neck: "none", held: "none",
+    colors: colors({ body: "#243356", ear: "#243356", inner: "#f0a050", tip: "#243356", belly: "#fffdfb", tail: "#243356", blush: "#ff709c" }),
+  },
+  frog: {
+    body: "wide", ears: "none", tail: "none", belly: true,
+    eyes: "dot", mouth: "wide", blush: "none", marking: "none",
+    head: "none", face: "none", neck: "none", held: "none",
+    colors: colors({ body: "#3cb85c", ear: "#3cb85c", inner: "#ffffff", tip: "#2e8b46", belly: "#dff5b0", tail: "#3cb85c", blush: "#ff709c" }),
+  },
+};
+
+export const BODY_RADIUS: Record<string, number> = {
+  mochi: 33,
+  bean: 31,
+  pear: 31,
+  wide: 43,
+};
+
+export function bodyRadiusOf(look: { body?: string } | null | undefined): number {
+  const id = look && typeof look.body === "string" ? look.body : "bean";
+  return BODY_RADIUS[id] ?? BODY_RADIUS.bean;
+}
+
 export function catalog() {
-  return { animals: ANIMALS, accessories: ACCESSORY_GROUPS };
+  return {
+    animals: ANIMALS.map((animal) => ({ ...animal, look: presetLook(animal.id) })),
+    parts: PARTS,
+    colors: COLOR_LABELS,
+    swatches: SWATCHES,
+    radii: BODY_RADIUS,
+  };
+}
+
+export function presetLook(animal: string): Look | null {
+  const found = PRESET_LOOKS[animal];
+  if (!found) return null;
+  return { v: 2, ...found, colors: { ...found.colors } };
+}
+
+const HEX = /^#[0-9a-fA-F]{6}$/;
+
+function pickId(value: unknown, allowed: readonly string[], fallback: string): string | null {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string" || !allowed.includes(value)) return null;
+  return value;
+}
+
+export function normalizeLook(input: unknown): Look | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const src = input as Record<string, unknown>;
+  const base = presetLook("cat");
+  if (!base) return null;
+  const body = pickId(src.body, BODY_IDS, base.body);
+  const ears = pickId(src.ears, EAR_IDS, base.ears);
+  const tail = pickId(src.tail, TAIL_IDS, base.tail);
+  const eyes = pickId(src.eyes, EYE_IDS, base.eyes);
+  const mouth = pickId(src.mouth, MOUTH_IDS, base.mouth);
+  const blush = pickId(src.blush, BLUSH_IDS, base.blush);
+  const marking = pickId(src.marking, MARK_IDS, base.marking);
+  const head = pickId(src.head, HEAD_IDS, base.head);
+  const face = pickId(src.face, FACE_IDS, base.face);
+  const neck = pickId(src.neck, NECK_IDS, base.neck);
+  const held = pickId(src.held, HELD_IDS, base.held);
+  if (!body || !ears || !tail || !eyes || !mouth || !blush || !marking || !head || !face || !neck || !held) return null;
+  const belly = src.belly === undefined ? base.belly : src.belly;
+  if (typeof belly !== "boolean") return null;
+  const colorsOut = { ...base.colors };
+  if (src.colors !== undefined) {
+    if (!src.colors || typeof src.colors !== "object" || Array.isArray(src.colors)) return null;
+    const bag = src.colors as Record<string, unknown>;
+    for (const key of COLOR_KEYS) {
+      if (!(key in bag)) continue;
+      const value = bag[key];
+      if (typeof value !== "string" || !HEX.test(value)) return null;
+      colorsOut[key] = value.toLowerCase();
+    }
+  }
+  return { v: 2, body, ears, tail, belly, eyes, mouth, blush, marking, head, face, neck, held, colors: colorsOut };
+}
+
+export function applyLegacyAccessories(look: Look, accessories: Accessories): Look {
+  const next: Look = { ...look, colors: { ...look.colors } };
+  if (accessories.hat && accessories.hat !== "none" && (HEAD_IDS as readonly string[]).includes(accessories.hat)) {
+    next.head = accessories.hat;
+  }
+  if (accessories.glasses && accessories.glasses !== "none" && (FACE_IDS as readonly string[]).includes(accessories.glasses)) {
+    next.face = accessories.glasses;
+  }
+  if (accessories.extra === "scarf" || accessories.extra === "bowtie") next.neck = accessories.extra;
+  if (accessories.extra === "headphones" && next.head === "none") next.head = "headphones";
+  return next;
+}
+
+export function readStoredLook(animal: string | null, raw: string | null): Look | null {
+  let parsed: unknown = null;
+  if (raw) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = null;
+    }
+  }
+  if (parsed && typeof parsed === "object" && (parsed as { v?: unknown }).v === 2) {
+    const look = normalizeLook(parsed);
+    if (look) return look;
+  }
+  if (!animal || animal === "custom" || !isAnimal(animal)) return null;
+  const look = presetLook(animal);
+  if (!look) return null;
+  return applyLegacyAccessories(look, normalizeAccessories(parsed) ?? defaultAccessories());
+}
+
+export function avatarAnimal(raw: unknown, look: Look): string {
+  if (raw === "custom") return "custom";
+  if (typeof raw === "string" && isAnimal(raw)) return raw;
+  for (const animal of ANIMALS) {
+    const preset = presetLook(animal.id);
+    if (!preset) continue;
+    if (JSON.stringify({ ...preset, v: 0 }) === JSON.stringify({ ...look, v: 0 })) return animal.id;
+  }
+  return "custom";
 }
 
 export function palette() {
@@ -400,6 +691,10 @@ export function buildOffice(): OfficeMap {
     { id: "water-1", kind: "water", x: 26 * TILE + 4, y: 28 * TILE + 8, rot: 0 },
     { id: "sofa-left", kind: "sofa", x: 31 * TILE, y: 26 * TILE + 8, rot: 90 },
     { id: "sofa-right", kind: "sofa", x: 36 * TILE + 8, y: 26 * TILE + 8, rot: 90 },
+    { id: "meet-chair-s1", kind: "chair", x: 620, y: 202, rot: 0 },
+    { id: "meet-chair-s2", kind: "chair", x: 700, y: 202, rot: 0 },
+    { id: "meet-chair-w", kind: "chair", x: 536, y: 120, rot: 0 },
+    { id: "meet-chair-e", kind: "chair", x: 776, y: 120, rot: 0 },
     { id: "bin-1", kind: "bin", x: 37 * TILE + 6, y: 22 * TILE, rot: 0 },
   );
 
